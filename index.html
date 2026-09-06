@@ -392,6 +392,38 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 .fav-row .w { font-weight: 600; font-size: 15px; }
 .fav-row .m { font-size: 12.5px; color: var(--text-dim); }
 
+/* ---------- sync chip ---------- */
+.sync-bar { display: flex; justify-content: center; margin-bottom: 4px; }
+.sync-chip {
+  background: rgba(255,255,255,0.10);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 7px 15px;
+  font-size: 12.5px;
+  display: flex; align-items: center; gap: 6px;
+}
+.sync-chip:hover { background: rgba(255,255,255,0.18); }
+.sync-chip.ok    { background: rgba(78,201,138,0.18); color: #b6f0d2; }
+.sync-chip.err   { background: rgba(232,69,92,0.20); color: #ffc3cc; }
+.sync-chip.busy  { background: rgba(255,179,71,0.20); color: #ffd9a0; }
+
+.spin { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.token-help {
+  font-size: 12px; color: var(--text-dim); line-height: 1.8;
+  background: rgba(0,0,0,0.2); border-radius: 10px; padding: 12px 14px; margin-top: 10px;
+}
+.token-help ol { margin: 6px 0 0; padding-left: 20px; }
+.token-help a { color: #b9a6ff; }
+
+.danger-zone { display: flex; gap: 8px; margin-top: 12px; }
+.danger-zone button {
+  flex: 1; font-size: 12.5px; padding: 10px 6px; border-radius: 10px;
+  background: rgba(255,255,255,0.10); color: var(--text-dim);
+}
+.danger-zone button:hover { background: rgba(255,255,255,0.18); color: #fff; }
+
 .hidden { display: none !important; }
 </style>
 </head>
@@ -422,6 +454,7 @@ function loadCards() {
 }
 function saveCards(cards) {
   localStorage.setItem(CARDS_KEY, JSON.stringify(cards));
+  scheduleSync();
 }
 function loadFavorites() {
   try {
@@ -434,6 +467,7 @@ function loadFavorites() {
 }
 function saveFavorites(favs) {
   localStorage.setItem(FAVORITES_KEY, JSON.stringify(favs));
+  scheduleSync();
 }
 
 function newId() {
@@ -460,6 +494,11 @@ const state = {
   speed: localStorage.getItem('flashcard_speed') || 'mid',   // slow | mid | fast
   round: 1,
   tip: '',
+  syncToken: localStorage.getItem('flashcard_sync_token') || '',
+  syncGist: localStorage.getItem('flashcard_sync_gist') || '',
+  lastSync: Number(localStorage.getItem('flashcard_sync_time') || 0),
+  syncStatus: localStorage.getItem('flashcard_sync_token') ? 'idle' : 'off',
+  syncMsg: '',
 };
 
 /* =========================================================
@@ -911,6 +950,241 @@ function exportCsv(scope) {
   setState({ error: '', info: '已导出 ' + list.length + ' 个单词到「下载」文件夹', modal: null });
 }
 
+/* =========================================================
+   Sync via a private GitHub Gist.
+
+   The token lives only in this browser's localStorage — it is never
+   part of the source, so publishing this page stays safe. Only the
+   `gist` scope is needed.
+
+   Strategy: merge. Cards are keyed by lower-cased word, so nothing is
+   ever lost; empty fields get filled in from whichever side has them.
+   Deletions therefore do not propagate — that is what the two force
+   buttons are for.
+   ========================================================= */
+const SYNC_TOKEN_KEY = 'flashcard_sync_token';
+const SYNC_GIST_KEY  = 'flashcard_sync_gist';
+const SYNC_TIME_KEY  = 'flashcard_sync_time';
+const GIST_FILE = 'flashcard-data.json';
+const GIST_DESC = 'Flash Card data (managed by the app)';
+
+let syncTimer = null;
+let syncSuppressed = false;   // guards against sync writing → triggering sync
+
+function ghHeaders() {
+  return {
+    'Authorization': 'Bearer ' + state.syncToken,
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+  };
+}
+
+async function ghApi(path, options) {
+  const res = await fetch('https://api.github.com' + path,
+    Object.assign({ headers: ghHeaders() }, options || {}));
+  if (res.status === 401) throw new Error('令牌无效或已过期，请重新填写');
+  if (res.status === 403) throw new Error('GitHub 拒绝了请求（可能是频率限制），过一会再试');
+  if (!res.ok) throw new Error('GitHub 返回 ' + res.status);
+  return res.json();
+}
+
+// Locate the gist holding our data file, or create it on first use.
+async function findOrCreateGist() {
+  if (state.syncGist) return state.syncGist;
+
+  const list = await ghApi('/gists?per_page=100');
+  const hit = list.find(function (g) { return g.files && g.files[GIST_FILE]; });
+  if (hit) {
+    state.syncGist = hit.id;
+    localStorage.setItem(SYNC_GIST_KEY, hit.id);
+    return hit.id;
+  }
+
+  const files = {};
+  files[GIST_FILE] = { content: JSON.stringify(emptyPayload(), null, 2) };
+  const made = await ghApi('/gists', {
+    method: 'POST',
+    body: JSON.stringify({ description: GIST_DESC, public: false, files: files }),
+  });
+  state.syncGist = made.id;
+  localStorage.setItem(SYNC_GIST_KEY, made.id);
+  return made.id;
+}
+
+function emptyPayload() {
+  return { version: 1, updatedAt: Date.now(), cards: [], favorites: [] };
+}
+
+function localPayload() {
+  return {
+    version: 1,
+    updatedAt: Date.now(),
+    cards: state.cards,
+    favorites: state.favorites,
+  };
+}
+
+async function readRemote() {
+  const id = await findOrCreateGist();
+  const g = await ghApi('/gists/' + id);
+  const f = g.files && g.files[GIST_FILE];
+  if (!f) return emptyPayload();
+  // Large gists come back truncated with a raw_url to fetch instead
+  const text = f.truncated ? await (await fetch(f.raw_url)).text() : f.content;
+  try {
+    const d = JSON.parse(text);
+    return {
+      version: d.version || 1,
+      updatedAt: d.updatedAt || 0,
+      cards: Array.isArray(d.cards) ? d.cards : [],
+      favorites: Array.isArray(d.favorites) ? d.favorites : [],
+    };
+  } catch (e) {
+    return emptyPayload();
+  }
+}
+
+async function writeRemote(payload) {
+  const id = await findOrCreateGist();
+  const files = {};
+  files[GIST_FILE] = { content: JSON.stringify(payload, null, 2) };
+  await ghApi('/gists/' + id, { method: 'PATCH', body: JSON.stringify({ files: files }) });
+}
+
+/* Merge two sides. Nothing is dropped; blank fields are filled in. */
+function mergeData(local, remote) {
+  const byWord = new Map();
+
+  const take = function (c) {
+    const key = (c.word || '').trim().toLowerCase();
+    if (!key) return;
+    const prev = byWord.get(key);
+    if (!prev) {
+      byWord.set(key, Object.assign({}, c));
+      return;
+    }
+    // Same word on both sides: keep what is there, fill what is missing
+    ['phonetic', 'meaning', 'partOfSpeech', 'example'].forEach(function (f) {
+      if (!prev[f] && c[f]) prev[f] = c[f];
+    });
+    if (!prev.createdAt || (c.createdAt && c.createdAt < prev.createdAt)) {
+      prev.createdAt = c.createdAt;
+    }
+  };
+
+  (remote.cards || []).forEach(take);
+  (local.cards || []).forEach(take);
+
+  const cards = Array.from(byWord.values());
+  cards.forEach(function (c, i) {
+    if (!c.id) c.id = newId();
+    c.sortOrder = i;
+  });
+
+  const seen = new Set();
+  const favorites = [];
+  (remote.favorites || []).concat(local.favorites || []).forEach(function (w) {
+    const k = String(w).toLowerCase();
+    if (!seen.has(k)) { seen.add(k); favorites.push(w); }
+  });
+
+  return { version: 1, updatedAt: Date.now(), cards: cards, favorites: favorites };
+}
+
+function applyPayload(p) {
+  syncSuppressed = true;
+  saveCards(p.cards);
+  saveFavorites(p.favorites);
+  syncSuppressed = false;
+  state.cards = p.cards;
+  state.favorites = p.favorites;
+}
+
+function markSynced() {
+  const t = Date.now();
+  localStorage.setItem(SYNC_TIME_KEY, String(t));
+  state.lastSync = t;
+}
+
+function syncTimeLabel() {
+  if (!state.lastSync) return '还没同步过';
+  const diff = Date.now() - state.lastSync;
+  if (diff < 60000) return '刚刚同步';
+  if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前同步';
+  const d = new Date(state.lastSync);
+  const p = function (n) { return n < 10 ? '0' + n : String(n); };
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ' 同步';
+}
+
+/* mode: 'merge' | 'up' (local wins) | 'down' (cloud wins) */
+async function syncNow(mode) {
+  if (!state.syncToken) return;
+  if (state.syncStatus === 'syncing') return;
+
+  setState({ syncStatus: 'syncing', syncMsg: '' });
+  try {
+    if (mode === 'up') {
+      const mine = localPayload();
+      await writeRemote(mine);
+      markSynced();
+      setState({ syncStatus: 'ok', syncMsg: '已用本地覆盖云端（' + mine.cards.length + ' 张）' });
+      return;
+    }
+
+    const remote = await readRemote();
+
+    if (mode === 'down') {
+      applyPayload(remote);
+      markSynced();
+      setState({
+        syncStatus: 'ok', cards: remote.cards, favorites: remote.favorites,
+        syncMsg: '已用云端覆盖本地（' + remote.cards.length + ' 张）',
+      });
+      return;
+    }
+
+    const before = state.cards.length;
+    const merged = mergeData(localPayload(), remote);
+    applyPayload(merged);
+    await writeRemote(merged);
+    markSynced();
+
+    const gained = merged.cards.length - before;
+    setState({
+      syncStatus: 'ok', cards: merged.cards, favorites: merged.favorites,
+      syncMsg: gained > 0 ? '同步完成，新增 ' + gained + ' 张' : '同步完成，共 ' + merged.cards.length + ' 张',
+    });
+  } catch (e) {
+    setState({ syncStatus: 'error', syncMsg: e.message || '同步失败' });
+  }
+}
+
+// Debounced auto-push after any local write
+function scheduleSync() {
+  if (!state.syncToken || syncSuppressed) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(function () { syncNow('merge'); }, 4000);
+}
+
+function connectSync(token) {
+  const t = (token || '').trim();
+  if (!t) return;
+  localStorage.setItem(SYNC_TOKEN_KEY, t);
+  state.syncToken = t;
+  state.syncGist = '';
+  localStorage.setItem(SYNC_GIST_KEY, '');
+  setState({ syncStatus: 'syncing', syncMsg: '正在连接…' });
+  syncNow('merge');
+}
+
+function disconnectSync() {
+  localStorage.setItem(SYNC_TOKEN_KEY, '');
+  localStorage.setItem(SYNC_GIST_KEY, '');
+  localStorage.setItem(SYNC_TIME_KEY, '');
+  clearTimeout(syncTimer);
+  setState({ syncToken: '', syncGist: '', lastSync: 0, syncStatus: 'off', syncMsg: '', modal: null });
+}
+
 function toggleFav(word) {
   let favs = state.favorites.slice();
   if (isFav(word)) {
@@ -948,9 +1222,19 @@ function deleteCard(id) {
 }
 
 function clearAll() {
+  // Do not auto-sync here: a merge would pull everything straight back from
+  // the cloud. Tell the user to use 「强制上传」 if they also want it gone there.
+  syncSuppressed = true;
+  clearTimeout(syncTimer);
   saveCards([]);
   saveFavorites([]);
-  setState({ cards: [], favorites: [], deck: [], index: 0, modal: null, info: '已清空全部卡片' });
+  syncSuppressed = false;
+  setState({
+    cards: [], favorites: [], deck: [], index: 0, modal: null,
+    info: state.syncToken
+      ? '已清空本地卡片。云端还留着备份 —— 如果也要清掉，去「☁️ 同步」点「强制上传」'
+      : '已清空全部卡片',
+  });
 }
 
 function saveEdit(id) {
@@ -999,10 +1283,21 @@ function addOneCard() {
 /* =========================================================
    Views
    ========================================================= */
+function syncChip() {
+  const s = state.syncStatus;
+  let cls = '', txt = '☁️ 开启同步';
+  if (s === 'syncing') { cls = 'busy'; txt = '<span class="spin">⟳</span> 同步中…'; }
+  else if (s === 'ok')  { cls = 'ok';  txt = '☁️ ' + syncTimeLabel(); }
+  else if (s === 'error') { cls = 'err'; txt = '⚠️ 同步失败，点这里看'; }
+  else if (s === 'idle' && state.syncToken) { cls = ''; txt = '☁️ ' + syncTimeLabel(); }
+  return `<div class="sync-bar"><button class="sync-chip ${cls}" data-act="sync-open">${txt}</button></div>`;
+}
+
 function viewHome() {
   const n = state.cards.length;
   const f = state.favorites.length;
   return `
+    ${syncChip()}
     <div class="home-hero">
       <div class="glyph">🎓</div>
       <h1>单词闪卡学习</h1>
@@ -1292,6 +1587,71 @@ function viewModal() {
       </div>`;
   }
 
+  if (m.type === 'sync') {
+    const isFile = location.protocol === 'file:';
+    const connected = !!state.syncToken;
+
+    const msg = state.syncMsg
+      ? `<div class="notice ${state.syncStatus === 'error' ? 'err' : 'info'}"
+              style="margin-bottom:12px"><span>${state.syncStatus === 'error' ? '⚠️' : '✓'}</span>
+              <span>${esc(state.syncMsg)}</span></div>`
+      : '';
+
+    const body = connected ? `
+      ${msg}
+      <p style="margin-bottom:10px">
+        已连接到你的私密 Gist。<br>
+        状态：<b style="color:#fff">${syncTimeLabel()}</b><br>
+        本地：<b style="color:#fff">${state.cards.length}</b> 张卡片、<b style="color:#fff">${state.favorites.length}</b> 个生词
+      </p>
+      <p style="font-size:12.5px">
+        改动会在几秒后自动上传，打开页面时自动拉取。两边内容不一样时<b>合并</b>，谁都不会丢。
+      </p>
+      <div class="danger-zone">
+        <button data-act="sync-up">⬆ 强制上传<br><span style="opacity:.7">本地覆盖云端</span></button>
+        <button data-act="sync-down">⬇ 强制下载<br><span style="opacity:.7">云端覆盖本地</span></button>
+      </div>
+      <div style="margin-top:12px">
+        <button class="tool-btn" style="width:100%" data-act="sync-off">断开同步（不会删数据）</button>
+      </div>
+    ` : `
+      ${msg}
+      ${isFile ? `<div class="notice err" style="margin-bottom:12px"><span>⚠️</span>
+        <span>你现在是用本地文件打开的，同步多半会被浏览器拦住。请改用网址打开：<br>
+        <code>pyyannie.github.io/flash-card/</code></span></div>` : ''}
+      <p>把手机和电脑的单词库连起来。数据存在<b>你自己的私密 Gist</b> 里，只有你能看到。</p>
+      <div class="field">
+        <label>GitHub 令牌（token）</label>
+        <input id="sync-token" type="password" placeholder="ghp_ 或 github_pat_ 开头" autocomplete="off">
+      </div>
+      <div class="token-help">
+        <b>怎么拿这串令牌</b>
+        <ol>
+          <li>打开 <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
+          <li>点 <b>Generate new token</b></li>
+          <li>权限只勾 <b>Gists → Read and write</b>，别的都不要给</li>
+          <li>生成后复制那串字符，粘到上面</li>
+        </ol>
+        令牌只存在这台设备的浏览器里，不会上传、不在网页代码里。<br>
+        另一台设备填<b>同一串令牌</b>就能对上，不用记别的编号。
+      </div>
+    `;
+
+    return `
+      <div class="mask" data-act="close-modal">
+        <div class="modal" data-stop>
+          <header><h3>☁️ 云端同步</h3><button class="icon-btn" data-act="close-modal">✕</button></header>
+          <div class="body">${body}</div>
+          <footer>
+            <button data-act="close-modal">关闭</button>
+            ${connected
+              ? '<button class="primary" data-act="sync-run">立即同步</button>'
+              : '<button class="primary" data-act="sync-connect">连接</button>'}
+          </footer>
+        </div>
+      </div>`;
+  }
+
   return '';
 }
 
@@ -1399,6 +1759,17 @@ document.addEventListener('click', function (ev) {
     case 'ask-clear': setState({ modal: { type: 'confirm-clear' } }); break;
     case 'do-clear': clearAll(); break;
     case 'fav-modal': setState({ modal: { type: 'favorites' } }); break;
+
+    case 'sync-open': setState({ modal: { type: 'sync' }, syncMsg: state.syncMsg }); break;
+    case 'sync-connect': {
+      const el = document.getElementById('sync-token');
+      connectSync(el ? el.value : '');
+      break;
+    }
+    case 'sync-run':  syncNow('merge'); break;
+    case 'sync-up':   syncNow('up'); break;
+    case 'sync-down': syncNow('down'); break;
+    case 'sync-off':  disconnectSync(); break;
     case 'close-modal': setState({ modal: null }); break;
   }
 });
@@ -1436,6 +1807,10 @@ document.addEventListener('keydown', function (ev) {
 });
 
 render();
+
+// Pull from the cloud once on load, so a device edited elsewhere catches up
+// before you start adding to it.
+if (state.syncToken) syncNow('merge');
 </script>
 </body>
 </html>
