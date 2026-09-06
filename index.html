@@ -425,6 +425,21 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 }
 .danger-zone button:hover { background: rgba(255,255,255,0.18); color: #fff; }
 
+/* ---------- voice picker ---------- */
+.vgroup { margin-bottom: 16px; }
+.vgroup h4 { font-size: 13px; margin: 0 0 8px; color: rgba(255,255,255,.75); font-weight: 600; }
+.vrow { display: flex; gap: 6px; align-items: center; margin-bottom: 5px; }
+.vpick {
+  flex: 1; text-align: left; background: rgba(255,255,255,0.08);
+  color: #fff; border-radius: 10px; padding: 10px 12px; font-size: 13.5px;
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.vpick:hover { background: rgba(255,255,255,0.16); }
+.vrow.on .vpick { background: rgba(143,95,198,0.4); font-weight: 600; }
+.vname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vlang { font-size: 11px; color: rgba(255,255,255,.45); flex-shrink: 0; }
+.male { font-size: 10.5px; color: #8fd0ff; }
+
 .hidden { display: none !important; }
 </style>
 </head>
@@ -436,7 +451,7 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 <script>
 'use strict';
 
-const APP_VERSION = '6';
+const APP_VERSION = '7';
 
 /* =========================================================
    Storage layer — replaces window.lingguang.db (cloud SQL)
@@ -514,13 +529,18 @@ const SPEEDS = { slow: 5000, mid: 3000, fast: 1500 };
 const SPEED_LABEL = { slow: '慢', mid: '中', fast: '快' };
 const SPEAK_LABEL = { off: '🔇 不读', en: '🔊 英文', both: '🔊 英+中' };
 let autoTimer = null;
+let gapTimer = null;   // pause between the Chinese meaning and the next word
 
+// Stopping playback: kill both timers.
 function clearAuto() {
   if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+  if (gapTimer) { clearTimeout(gapTimer); gapTimer = null; }
 }
 
+// Queueing the next step: only reset the step timer. Clearing gapTimer here
+// would cancel the pause that the step we just ran had scheduled.
 function scheduleAuto() {
-  clearAuto();
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
   if (!state.autoPlay || state.view !== 'flashcard' || state.modal) return;
   autoTimer = setTimeout(autoStep, SPEEDS[state.speed] || SPEEDS.mid);
 }
@@ -538,14 +558,28 @@ function autoStep() {
   } else if (state.index < state.deck.length - 1) {
     const next = state.index + 1;
     setState({ index: next, flipped: false });
-    autoSpeak(state.deck[next].word);
+    speakAfterGap(next);
   } else {
     // End of deck: loop back to the start instead of stopping.
     const round = state.round + 1;
     setState({ index: 0, flipped: false, round: round, tip: '第 ' + round + ' 轮' });
-    autoSpeak(state.deck[0].word);
+    speakAfterGap(0);
   }
   scheduleAuto();
+}
+
+/* Leave a beat before the next English word. Without it the Chinese
+   meaning runs straight into it and the two blur together. */
+function speakAfterGap(idx) {
+  const gap = state.speakMode === 'both' ? 550 : 120;
+  if (gapTimer) clearTimeout(gapTimer);
+  gapTimer = setTimeout(function () {
+    gapTimer = null;
+    if (state.autoPlay && state.view === 'flashcard' &&
+        state.index === idx && !state.flipped) {
+      autoSpeak(state.deck[idx].word);
+    }
+  }, gap);
 }
 
 function startAuto() {
@@ -803,11 +837,44 @@ function primeSpeech() {
   } catch (e) { /* nothing we can do */ }
 }
 
-function voicesFor(lang) {
+const VOICE_EN_KEY = 'flashcard_voice_en';
+const VOICE_ZH_KEY = 'flashcard_voice_zh';
+
+function allVoices() {
   const s = tts();
-  const all = (s && s.getVoices && s.getVoices()) || [];
+  return (s && s.getVoices && s.getVoices()) || [];
+}
+
+function voicesByLang(prefix) {
+  return allVoices().filter(function (v) {
+    return (v.lang || '').toLowerCase().replace('_', '-').indexOf(prefix) === 0;
+  });
+}
+
+/* Resolve which voice to speak with: the user's pick if it is still
+   installed, otherwise the closest match for the language. */
+function pickVoice(lang) {
+  const want = String(lang || '').toLowerCase();
+  const zh = want.indexOf('zh') === 0;
+  const saved = localStorage.getItem(zh ? VOICE_ZH_KEY : VOICE_EN_KEY);
+  const all = allVoices();
+
+  if (saved) {
+    const hit = all.find(function (v) { return v.name === saved; });
+    if (hit) return hit;
+  }
+  const base = want.slice(0, 2);
+  return all.find(function (v) {
+    return (v.lang || '').toLowerCase().replace('_', '-') === want;
+  }) || all.find(function (v) {
+    return (v.lang || '').toLowerCase().replace('_', '-').indexOf(base) === 0;
+  }) || null;
+}
+
+function voicesFor(lang) {
   const want = String(lang || '').toLowerCase();
   const base = want.slice(0, 2);
+  const all = allVoices();
   return {
     all: all,
     exact: all.find(function (v) {
@@ -827,8 +894,8 @@ function speak(text, lang) {
   const start = function () {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = target;
-    const v = voicesFor(target);
-    if (v.exact || v.loose) u.voice = v.exact || v.loose;
+    const v = pickVoice(target);
+    if (v) u.voice = v;
     u.rate = target === 'zh-CN' ? 1 : 0.9;
     u.volume = 1;
     s.speak(u);
@@ -928,7 +995,11 @@ function handleTextSubmit() {
   setState({ cards: r.cards, favorites: r.favorites, inputText: '', error: '', info: msg });
 }
 
-function handleFileImport() {
+// Which import the file picker is serving: 'cards' or 'favorites'
+let importTarget = 'cards';
+
+function handleFileImport(target) {
+  importTarget = target || 'cards';
   document.getElementById('file-picker').click();
 }
 
@@ -949,6 +1020,12 @@ function onFileChosen(ev) {
   const reader = new FileReader();
   reader.onload = function () {
     const text = String(reader.result || '');
+
+    if (importTarget === 'favorites') {
+      importFavorites(text, file.name);
+      return;
+    }
+
     let entries;
     if (/\.(csv|tsv)$/.test(name) || /[,\t]/.test(text)) {
       entries = rowsToEntries(parseDelimited(text));
@@ -1257,6 +1334,36 @@ function disconnectSync() {
   setState({ syncToken: '', syncGist: '', lastSync: 0, syncStatus: 'off', syncMsg: '', modal: null });
 }
 
+/* Import a favourites list: any word in the file gets bookmarked. Words
+   without a card yet get one created, so a bare word list works too. */
+function importFavorites(text, fileName) {
+  let entries;
+  if (/[,\t]/.test(text) && text.indexOf('\n') !== -1) {
+    entries = rowsToEntries(parseDelimited(text));
+  } else {
+    entries = extractWords(text).map(function (w) { return { word: w }; });
+  }
+  if (!entries.length) {
+    setState({ error: '这个文件里没读到单词', info: '', modal: null });
+    return;
+  }
+
+  // Everything in a favourites file counts as favourited
+  entries.forEach(function (e) { e.favorite = '是'; });
+
+  const before = state.cards.length;
+  const favBefore = state.favorites.length;
+  const r = addCards(entries);
+  const newCards = r.cards.length - before;
+  const newFavs = r.favorites.length - favBefore;
+
+  let msg = '从「' + fileName + '」收藏了 ' + newFavs + ' 个生词';
+  if (newCards > 0) msg += '，其中 ' + newCards + ' 个是新建的卡片';
+  if (newFavs === 0) msg = '这些词本来就都在生词本里了';
+
+  setState({ cards: r.cards, favorites: r.favorites, error: '', info: msg, modal: null });
+}
+
 function toggleFav(word) {
   let favs = state.favorites.slice();
   if (isFav(word)) {
@@ -1512,6 +1619,7 @@ function viewFlashcard() {
       ${['off','en','both'].map(function (s) {
         return `<button class="${state.speakMode === s ? 'on' : ''}" data-act="say-${s}">${SPEAK_LABEL[s]}</button>`;
       }).join('')}
+      <button data-act="voice-open" title="换朗读声音">🗣</button>
     </div>
     <div class="speed-seg">
       ${['slow','mid','fast'].map(function (s) {
@@ -1672,6 +1780,59 @@ function viewModal() {
             ${favs.length > 0
               ? '<button style="width:100%" data-act="export-fav">⬇ 导出生词本（' + favs.length + ' 个）</button>'
               : ''}
+            <button style="width:100%" data-act="import-fav">⬆ 导入生词本</button>
+          </footer>
+        </div>
+      </div>`;
+  }
+
+  if (m.type === 'voice') {
+    // Names iOS/macOS commonly ships as male voices. Only a hint — the
+    // platform exposes no gender field, so the 试听 button is the real test.
+    const MALE = ['aaron','alex','arthur','daniel','fred','gordon','lee','oliver',
+                  'reed','rishi','rocko','tom','eddy','grandpa','li-mu','李木',
+                  'liang','yunyang','kangkang','hanhan'];
+    const isMale = function (n) {
+      const s = String(n).toLowerCase();
+      return MALE.some(function (m2) { return s.indexOf(m2) !== -1; });
+    };
+
+    const group = function (title, prefix, key, sample, lang) {
+      const list = voicesByLang(prefix);
+      if (!list.length) {
+        return `<div class="vgroup"><h4>${title}</h4>
+                  <p style="font-size:12.5px;color:var(--text-dim);margin:0">
+                    这台设备没有${title}</p></div>`;
+      }
+      const cur = localStorage.getItem(key) || (pickVoice(lang) || {}).name || '';
+      const rows = list.map(function (v) {
+        return `
+          <div class="vrow ${v.name === cur ? 'on' : ''}">
+            <button class="vpick" data-act="voice-pick" data-key="${key}" data-name="${esc(v.name)}">
+              <span class="vname">${v.name === cur ? '● ' : '○ '}${esc(v.name)}${isMale(v.name) ? ' <span class="male">男声?</span>' : ''}</span>
+              <span class="vlang">${esc(v.lang)}</span>
+            </button>
+            <button class="icon-btn" data-act="voice-try" data-name="${esc(v.name)}"
+                    data-text="${esc(sample)}" data-lang="${lang}" title="试听">▶</button>
+          </div>`;
+      }).join('');
+      return `<div class="vgroup"><h4>${title}（${list.length} 个）</h4>${rows}</div>`;
+    };
+
+    return `
+      <div class="mask" data-act="close-modal">
+        <div class="modal" data-stop>
+          <header><h3>🗣 换朗读声音</h3><button class="icon-btn" data-act="close-modal">✕</button></header>
+          <div class="body">
+            <p style="font-size:12.5px;margin-bottom:12px">
+              点 <b>▶</b> 试听，点名字选中。标「男声?」只是按常见名字猜的，<b>以试听为准</b>。
+            </p>
+            ${group('英文声音', 'en', VOICE_EN_KEY, 'apple, this is a test', 'en-US')}
+            ${group('中文声音', 'zh', VOICE_ZH_KEY, '苹果，这是一段试听', 'zh-CN')}
+          </div>
+          <footer>
+            <button data-act="voice-reset">恢复默认</button>
+            <button class="primary" data-act="close-modal">完成</button>
           </footer>
         </div>
       </div>`;
@@ -1830,7 +1991,8 @@ document.addEventListener('click', function (ev) {
     case 'unfav': toggleFav(word); break;
 
     case 'submit': handleTextSubmit(); break;
-    case 'file': handleFileImport(); break;
+    case 'file': handleFileImport('cards'); break;
+    case 'import-fav': handleFileImport('favorites'); break;
     case 'paste': handlePaste(); break;
     case 'clear-text': setState({ inputText: '', error: '', info: '' }); break;
     case 'clear-msg': setState({ error: '', info: '' }); break;
@@ -1856,6 +2018,35 @@ document.addEventListener('click', function (ev) {
     case 'fav-modal': setState({ modal: { type: 'favorites' } }); break;
 
     case 'sync-open': setState({ modal: { type: 'sync' }, syncMsg: state.syncMsg }); break;
+
+    case 'voice-open': setState({ modal: { type: 'voice' } }); break;
+    case 'voice-pick': {
+      localStorage.setItem(el.dataset.key, el.dataset.name);
+      render();
+      break;
+    }
+    case 'voice-try': {
+      // Speak with this specific voice without changing the saved choice
+      const s = tts();
+      if (s) {
+        const v = allVoices().find(function (x) { return x.name === el.dataset.name; });
+        if (s.speaking || s.pending) s.cancel();
+        setTimeout(function () {
+          const u = new SpeechSynthesisUtterance(el.dataset.text);
+          u.lang = el.dataset.lang;
+          if (v) u.voice = v;
+          u.rate = el.dataset.lang === 'zh-CN' ? 1 : 0.9;
+          u.volume = 1;
+          s.speak(u);
+        }, 60);
+      }
+      break;
+    }
+    case 'voice-reset':
+      localStorage.removeItem(VOICE_EN_KEY);
+      localStorage.removeItem(VOICE_ZH_KEY);
+      render();
+      break;
     case 'sync-connect': {
       const el = document.getElementById('sync-token');
       connectSync(el ? el.value : '');
