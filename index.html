@@ -436,7 +436,7 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 <script>
 'use strict';
 
-const APP_VERSION = '5';
+const APP_VERSION = '6';
 
 /* =========================================================
    Storage layer — replaces window.lingguang.db (cloud SQL)
@@ -560,14 +560,14 @@ function startAuto() {
 // Pause: freeze on the current card so play resumes from here.
 function pauseAuto(tip) {
   clearAuto();
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  { const s = tts(); if (s) s.cancel(); }
   setState({ autoPlay: false, tip: tip || '' });
 }
 
 // Stop: halt and rewind to the first card.
 function stopAuto() {
   clearAuto();
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  { const s = tts(); if (s) s.cancel(); }
   setState({ autoPlay: false, index: 0, flipped: false, round: 1, tip: '' });
 }
 
@@ -782,20 +782,30 @@ function rowsToEntries(rows) {
       so we only cancel when something is queued and then defer;
    3. a bare lang tag can be silent — pick a real voice when one exists.
    ========================================================= */
+/* Returns the speech engine only when it is genuinely usable.
+   `'speechSynthesis' in window` is not enough: the key can exist with a
+   null value, and dereferencing that crashes the whole script. */
+function tts() {
+  const s = typeof window !== 'undefined' ? window.speechSynthesis : null;
+  return (s && typeof s.speak === 'function') ? s : null;
+}
+
 let speechPrimed = false;
 
 function primeSpeech() {
-  if (speechPrimed || !('speechSynthesis' in window)) return;
+  const s = tts();
+  if (speechPrimed || !s) return;
   try {
     const u = new SpeechSynthesisUtterance(' ');
     u.volume = 0;
-    window.speechSynthesis.speak(u);
+    s.speak(u);
     speechPrimed = true;
   } catch (e) { /* nothing we can do */ }
 }
 
 function voicesFor(lang) {
-  const all = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+  const s = tts();
+  const all = (s && s.getVoices && s.getVoices()) || [];
   const want = String(lang || '').toLowerCase();
   const base = want.slice(0, 2);
   return {
@@ -810,8 +820,8 @@ function voicesFor(lang) {
 }
 
 function speak(text, lang) {
-  if (!('speechSynthesis' in window) || !text) return;
-  const s = window.speechSynthesis;
+  const s = tts();
+  if (!s || !text) return;
   const target = lang || 'en-US';
 
   const start = function () {
@@ -867,7 +877,7 @@ function isFav(word) {
    ========================================================= */
 function goHome() {
   clearAuto();
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  { const s = tts(); if (s) s.cancel(); }
   setState({ view: 'home', error: '', info: '', tip: '', autoPlay: false, round: 1, modal: null });
 }
 
@@ -1440,8 +1450,9 @@ function viewInput() {
 
 /* What the device can actually say. Empty string = nothing worth warning about. */
 function voiceWarning() {
-  if (!('speechSynthesis' in window)) return '这个浏览器不支持朗读';
-  const all = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+  const s = tts();
+  if (!s) return '这个浏览器不支持朗读';
+  const all = (s.getVoices && s.getVoices()) || [];
   if (!all.length) return '';          // not loaded yet — stay quiet
   const has = function (p) {
     return all.some(function (v) { return (v.lang || '').toLowerCase().indexOf(p) === 0; });
@@ -1796,7 +1807,7 @@ document.addEventListener('click', function (ev) {
     case 'say-both': {
       const mode = act.slice(4);
       localStorage.setItem('flashcard_speak_mode', mode);
-      if (mode === 'off' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+      if (mode === 'off') { const s = tts(); if (s) s.cancel(); }
       setState({ speakMode: mode });
       break;
     }
@@ -1862,8 +1873,8 @@ document.getElementById('file-picker').addEventListener('change', onFileChosen);
 
 // iOS populates the voice list asynchronously; re-render once it arrives so
 // the warning above reflects reality rather than the empty first reading.
-if ('speechSynthesis' in window && window.speechSynthesis.addEventListener) {
-  window.speechSynthesis.addEventListener('voiceschanged', function () {
+if (tts() && tts().addEventListener) {
+  tts().addEventListener('voiceschanged', function () {
     if (state.view === 'flashcard' && !state.modal) render();
   });
 }
