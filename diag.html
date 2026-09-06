@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>发音诊断</title>
+<style>
+:root { --bg:#1d1238; --panel:rgba(255,255,255,.08); --line:rgba(255,255,255,.14); }
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+body {
+  margin:0; padding:20px 16px 60px; background:var(--bg); color:#fff;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+  font-size:15px; line-height:1.7; -webkit-text-size-adjust:100%;
+}
+.wrap { max-width:520px; margin:0 auto; }
+h1 { font-size:20px; margin:0 0 4px; }
+.sub { font-size:12.5px; color:rgba(255,255,255,.55); margin-bottom:18px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:14px;
+        padding:14px 16px; margin-bottom:12px; }
+.card h2 { font-size:14px; margin:0 0 10px; color:rgba(255,255,255,.75); font-weight:600; }
+.row { display:flex; gap:10px; padding:4px 0; font-size:13.5px; align-items:flex-start; }
+.row .k { color:rgba(255,255,255,.55); flex:0 0 116px; }
+.row .v { flex:1; word-break:break-all; }
+.ok { color:#7ee2ab; } .bad { color:#ff9bab; } .warn { color:#ffd08a; }
+button {
+  font-family:inherit; font-size:15px; border:none; border-radius:12px;
+  padding:14px; width:100%; margin-bottom:9px; color:#fff; cursor:pointer;
+  background:linear-gradient(90deg,#8f5fc6,#4a5bc0); font-weight:600;
+}
+button.alt { background:rgba(255,255,255,.14); font-weight:400; }
+#log {
+  background:rgba(0,0,0,.34); border-radius:12px; padding:12px 14px;
+  font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.75;
+  white-space:pre-wrap; word-break:break-all; min-height:90px; max-height:300px; overflow:auto;
+}
+.big { font-size:17px; font-weight:700; text-align:center; padding:14px;
+       border-radius:12px; margin-bottom:12px; }
+.voices { font-size:12px; color:rgba(255,255,255,.6); max-height:160px; overflow:auto;
+          margin-top:8px; padding-top:8px; border-top:1px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>发音诊断</h1>
+  <div class="sub">按顺序点下面的按钮，把整页截图发回去</div>
+
+  <div id="verdict" class="big"></div>
+
+  <div class="card">
+    <h2>环境</h2>
+    <div id="env"></div>
+  </div>
+
+  <div class="card">
+    <h2>操作</h2>
+    <button id="b-en">① 说英文 “apple”</button>
+    <button id="b-zh">② 说中文 “苹果”</button>
+    <button class="alt" id="b-list">③ 重新检测语音列表</button>
+    <button class="alt" id="b-clear">清空下方日志</button>
+  </div>
+
+  <div class="card">
+    <h2>日志（含失败原因）</h2>
+    <div id="log">还没有记录。</div>
+  </div>
+
+  <div class="card">
+    <h2>设备上的语音</h2>
+    <div id="vcount"></div>
+    <div class="voices" id="vlist"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+var logEl = document.getElementById('log');
+var lines = [];
+function log(msg) {
+  var t = new Date();
+  var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+  lines.push(p(t.getMinutes()) + ':' + p(t.getSeconds()) + '.' +
+             String(t.getMilliseconds()).padStart(3, '0') + '  ' + msg);
+  logEl.textContent = lines.join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function tts() {
+  var s = window.speechSynthesis;
+  return (s && typeof s.speak === 'function') ? s : null;
+}
+
+/* ---------- environment ---------- */
+function row(k, v, cls) {
+  return '<div class="row"><div class="k">' + k + '</div><div class="v ' +
+         (cls || '') + '">' + v + '</div></div>';
+}
+
+var s = tts();
+var standalone = (window.navigator.standalone === true) ||
+                 (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+var ua = navigator.userAgent;
+var isIOS = /iPad|iPhone|iPod/.test(ua) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+document.getElementById('env').innerHTML =
+  row('打开方式', standalone ? '主屏幕图标（standalone）' : '浏览器里',
+      standalone ? 'warn' : 'ok') +
+  row('协议', location.protocol, location.protocol === 'https:' ? 'ok' : 'warn') +
+  row('设备', isIOS ? 'iOS' : '非 iOS') +
+  row('朗读接口', s ? '存在' : '不存在 / 不可用', s ? 'ok' : 'bad') +
+  row('UA', ua);
+
+if (standalone) {
+  log('注意：当前是从主屏幕图标打开的。iOS 在这种模式下常常不让网页发声。');
+}
+
+/* ---------- voices ---------- */
+function listVoices() {
+  if (!s) {
+    document.getElementById('vcount').innerHTML =
+      '<span class="bad">朗读接口不可用</span>';
+    return [];
+  }
+  var vs = s.getVoices() || [];
+  var en = vs.filter(function (v) { return (v.lang || '').toLowerCase().indexOf('en') === 0; });
+  var zh = vs.filter(function (v) { return (v.lang || '').toLowerCase().indexOf('zh') === 0; });
+  document.getElementById('vcount').innerHTML =
+    row('总数', vs.length, vs.length ? 'ok' : 'bad') +
+    row('英文语音', en.length, en.length ? 'ok' : 'bad') +
+    row('中文语音', zh.length, zh.length ? 'ok' : 'bad');
+  document.getElementById('vlist').textContent =
+    vs.length ? vs.map(function (v) { return v.lang + '  ' + v.name; }).join('\n')
+              : '（列表为空）';
+  return vs;
+}
+
+if (s && s.addEventListener) {
+  s.addEventListener('voiceschanged', function () {
+    log('voiceschanged 事件到达，语音列表已更新');
+    listVoices();
+    verdict();
+  });
+}
+
+/* ---------- verdict ---------- */
+function verdict() {
+  var el = document.getElementById('verdict');
+  if (!s) {
+    el.textContent = '这台设备的浏览器不支持网页朗读';
+    el.style.background = 'rgba(232,69,92,.25)'; el.style.color = '#ffc3cc';
+    return;
+  }
+  var vs = s.getVoices() || [];
+  if (!vs.length) {
+    el.textContent = '语音列表是空的 —— 点③再试一次';
+    el.style.background = 'rgba(255,179,71,.22)'; el.style.color = '#ffd9a0';
+    return;
+  }
+  el.textContent = '接口和语音都在，点①②实测';
+  el.style.background = 'rgba(78,201,138,.2)'; el.style.color = '#b6f0d2';
+}
+
+/* ---------- speak test ---------- */
+function test(text, lang) {
+  if (!s) { log('✗ 朗读接口不可用，无法测试'); return; }
+
+  var vs = s.getVoices() || [];
+  var base = lang.slice(0, 2).toLowerCase();
+  var voice = null;
+  for (var i = 0; i < vs.length; i++) {
+    var L = (vs[i].lang || '').toLowerCase().replace('_', '-');
+    if (L === lang.toLowerCase()) { voice = vs[i]; break; }
+    if (!voice && L.indexOf(base) === 0) voice = vs[i];
+  }
+
+  log('— 开始测试 ' + lang + ' —');
+  log('  speaking=' + s.speaking + '  pending=' + s.pending + '  paused=' + s.paused);
+  log('  选中嗓音: ' + (voice ? voice.name + ' (' + voice.lang + ')' : '无，仅设 lang'));
+
+  if (s.speaking || s.pending) { s.cancel(); log('  已取消队列中的朗读'); }
+
+  var u = new SpeechSynthesisUtterance(text);
+  u.lang = lang;
+  if (voice) u.voice = voice;
+  u.volume = 1; u.rate = 0.9; u.pitch = 1;
+
+  var got = false;
+  u.onstart = function () { got = true; log('  ✓ onstart —— 引擎开始播报'); };
+  u.onend   = function () { log('  ✓ onend —— 播报结束'); };
+  u.onerror = function (e) {
+    got = true;
+    log('  ✗ onerror —— ' + (e.error || '未知原因'));
+    if (e.error === 'not-allowed') log('    → 浏览器不允许（多半要求用户手势 / standalone 限制）');
+    if (e.error === 'synthesis-unavailable' || e.error === 'synthesis-failed')
+      log('    → 系统语音引擎不可用，可能缺语音包');
+    if (e.error === 'audio-busy') log('    → 音频通道被占用');
+  };
+
+  s.speak(u);
+  log('  已调用 speak()，等待事件…');
+
+  setTimeout(function () {
+    if (!got) {
+      log('  ⚠️ 2 秒内既没有 onstart 也没有 onerror');
+      log('    → 最常见原因：iPhone 侧面静音拨片处于静音位置');
+      log('    → 其次：从主屏幕图标打开时 iOS 屏蔽了网页发声');
+    }
+  }, 2000);
+}
+
+document.getElementById('b-en').onclick = function () { test('apple', 'en-US'); };
+document.getElementById('b-zh').onclick = function () { test('苹果', 'zh-CN'); };
+document.getElementById('b-list').onclick = function () {
+  var vs = listVoices(); verdict();
+  log('手动检测：找到 ' + vs.length + ' 个语音');
+};
+document.getElementById('b-clear').onclick = function () {
+  lines = []; logEl.textContent = '已清空。';
+};
+
+listVoices();
+verdict();
+log('页面就绪。请按 ① ② 的顺序点击。');
+</script>
+</body>
+</html>
