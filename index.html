@@ -436,7 +436,7 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 <script>
 'use strict';
 
-const APP_VERSION = '4';
+const APP_VERSION = '5';
 
 /* =========================================================
    Storage layer — replaces window.lingguang.db (cloud SQL)
@@ -773,22 +773,75 @@ function rowsToEntries(rows) {
 }
 
 /* =========================================================
-   Pronunciation — replaces window.lingguang.playTTS with the
-   browser's built-in speech synthesis. Chinese meanings need
-   a zh-CN voice, English words an en-US one.
+   Pronunciation — the browser's built-in speech synthesis.
+
+   iOS needs three accommodations that desktop Safari does not:
+   1. the engine only starts from inside a user gesture, so we prime it
+      with a silent utterance on the first tap;
+   2. cancel() immediately followed by speak() drops the new utterance,
+      so we only cancel when something is queued and then defer;
+   3. a bare lang tag can be silent — pick a real voice when one exists.
    ========================================================= */
+let speechPrimed = false;
+
+function primeSpeech() {
+  if (speechPrimed || !('speechSynthesis' in window)) return;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+    speechPrimed = true;
+  } catch (e) { /* nothing we can do */ }
+}
+
+function voicesFor(lang) {
+  const all = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+  const want = String(lang || '').toLowerCase();
+  const base = want.slice(0, 2);
+  return {
+    all: all,
+    exact: all.find(function (v) {
+      return (v.lang || '').toLowerCase().replace('_', '-') === want;
+    }),
+    loose: all.find(function (v) {
+      return (v.lang || '').toLowerCase().replace('_', '-').indexOf(base) === 0;
+    }),
+  };
+}
+
 function speak(text, lang) {
   if (!('speechSynthesis' in window) || !text) return;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = lang || 'en-US';
-  u.rate = u.lang === 'zh-CN' ? 1 : 0.9;
-  window.speechSynthesis.speak(u);
+  const s = window.speechSynthesis;
+  const target = lang || 'en-US';
+
+  const start = function () {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = target;
+    const v = voicesFor(target);
+    if (v.exact || v.loose) u.voice = v.exact || v.loose;
+    u.rate = target === 'zh-CN' ? 1 : 0.9;
+    u.volume = 1;
+    s.speak(u);
+  };
+
+  if (s.speaking || s.pending) {
+    s.cancel();
+    setTimeout(start, 60);
+  } else {
+    start();
+  }
 }
 
 // Read the back of a card: the meaning, in Chinese.
 function speakMeaning(card) {
-  if (card && card.meaning) speak(card.meaning, 'zh-CN');
+  if (!card || !card.meaning) return;
+  const v = voicesFor('zh-CN');
+  // Only warn once we actually know the voice list (it is empty on first call)
+  if (v.all.length && !v.exact && !v.loose) {
+    setState({ tip: '这台设备没装中文语音，中文读不出来' });
+    return;
+  }
+  speak(card.meaning, 'zh-CN');
 }
 
 /* =========================================================
@@ -1385,6 +1438,20 @@ function viewInput() {
   `;
 }
 
+/* What the device can actually say. Empty string = nothing worth warning about. */
+function voiceWarning() {
+  if (!('speechSynthesis' in window)) return '这个浏览器不支持朗读';
+  const all = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+  if (!all.length) return '';          // not loaded yet — stay quiet
+  const has = function (p) {
+    return all.some(function (v) { return (v.lang || '').toLowerCase().indexOf(p) === 0; });
+  };
+  if (!has('en') && !has('zh')) return '没检测到可用语音，朗读不会出声';
+  if (!has('en')) return '没检测到英文语音';
+  if (!has('zh') && state.speakMode === 'both') return '没检测到中文语音，中文读不出来';
+  return '';
+}
+
 function viewFlashcard() {
   const deck = state.deck;
   if (deck.length === 0) {
@@ -1440,7 +1507,7 @@ function viewFlashcard() {
         return `<button class="${state.speed === s ? 'on' : ''}" data-act="speed-${s}">${SPEED_LABEL[s]} ${SPEEDS[s]/1000}秒</button>`;
       }).join('')}
     </div>
-    <div class="fc-tip">${esc(state.tip)}</div>
+    <div class="fc-tip">${esc(state.tip || voiceWarning())}</div>
     <div class="hint kbd-hint">键盘也能用：<code>空格</code> 翻卡，<code>←</code> <code>→</code> 切换，<code>S</code> 发音（正面读英文、背面读中文），<code>F</code> 收藏，<code>P</code> 自动播放</div>
   `;
 }
@@ -1693,6 +1760,10 @@ function render() {
    Event delegation
    ========================================================= */
 document.addEventListener('click', function (ev) {
+  // Unlock the speech engine while we are still inside the gesture, so the
+  // timer-driven calls during autoplay are allowed to make sound on iOS.
+  primeSpeech();
+
   const stopper = ev.target.closest('[data-stop]');
   const el = ev.target.closest('[data-act]');
 
@@ -1788,6 +1859,14 @@ document.addEventListener('click', function (ev) {
 });
 
 document.getElementById('file-picker').addEventListener('change', onFileChosen);
+
+// iOS populates the voice list asynchronously; re-render once it arrives so
+// the warning above reflects reality rather than the empty first reading.
+if ('speechSynthesis' in window && window.speechSynthesis.addEventListener) {
+  window.speechSynthesis.addEventListener('voiceschanged', function () {
+    if (state.view === 'flashcard' && !state.modal) render();
+  });
+}
 
 /* One-off cleanup on load: drop favourites whose card no longer exists.
    Cards deleted before this cleanup existed left the badge counting words
