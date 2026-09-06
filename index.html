@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<title>单词闪卡学习</title>
+
+<!-- Add-to-home-screen support: run full screen with no Safari chrome -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="单词闪卡">
+<meta name="theme-color" content="#2a1b52">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+/* ---------- design tokens ---------- */
+:root {
+  --bg-top: #2a1b52;
+  --bg-bottom: #1d1238;
+  --card1-a: #4a5bc0; --card1-b: #5a54c4;
+  --card2-a: #8f5fc6; --card2-b: #a370d2;
+  --card3-a: #9585d8; --card3-b: #a08fdd;
+  --card4-a: #8a7ad2; --card4-b: #9184d6;
+  --pill-bg: #3d2f6b;
+  --badge: #e8455c;
+  --text: #ffffff;
+  --text-dim: rgba(255, 255, 255, 0.68);
+  --panel: #33245e;
+  --panel-2: #3d2c6e;
+  --stroke: rgba(255, 255, 255, 0.14);
+  --ok: #4ec98a;
+  --warn: #ffb347;
+  --radius: 18px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0; padding: 0; min-height: 100%;
+}
+
+/* The gradient lives on html so it covers the safe areas too.
+   iOS Safari mishandles background-attachment:fixed, hence this split. */
+html {
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  background-repeat: no-repeat;
+  background-color: var(--bg-bottom);
+}
+
+body {
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Phone-width column, centred on desktop.
+   The safe-area insets keep content clear of the notch and the home bar
+   when running full screen from the home screen. */
+.app {
+  max-width: 460px;
+  margin: 0 auto;
+  min-height: 100vh;
+  min-height: 100dvh;   /* dvh excludes the Safari toolbars, avoiding a cut-off */
+  padding: calc(22px + env(safe-area-inset-top)) 16px
+           calc(110px + env(safe-area-inset-bottom));
+  position: relative;
+}
+
+/* No keyboard on a phone — hide the shortcut hint on touch devices */
+@media (hover: none) and (pointer: coarse) {
+  .kbd-hint { display: none; }
+}
+
+button { font-family: inherit; cursor: pointer; border: none; }
+
+/* ---------- shared header ---------- */
+.page-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 16px;
+}
+.back-btn {
+  background: rgba(255,255,255,0.12);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 14px;
+}
+.back-btn:hover { background: rgba(255,255,255,0.2); }
+.page-head .spacer { flex: 1; }
+
+/* ---------- home ---------- */
+.home-hero { text-align: center; padding: 12px 0 22px; }
+.home-hero .glyph { font-size: 42px; line-height: 1; }
+.home-hero h1 { margin: 12px 0 6px; font-size: 26px; font-weight: 700; letter-spacing: 0.5px; }
+.home-hero p { margin: 0; font-size: 13px; color: var(--text-dim); }
+
+.tiles { display: flex; flex-direction: column; gap: 12px; }
+
+.tile {
+  border-radius: var(--radius);
+  padding: 26px 18px;
+  text-align: center;
+  color: #fff;
+  display: block;
+  width: 100%;
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+.tile:hover { filter: brightness(1.08); }
+.tile:active { transform: scale(0.985); }
+.tile .glyph { font-size: 26px; line-height: 1; }
+.tile .title { font-size: 17px; font-weight: 600; margin-top: 10px; }
+.tile .sub { font-size: 12px; color: rgba(255,255,255,0.75); margin-top: 6px; }
+
+.tile-1 { background: linear-gradient(180deg, var(--card1-a), var(--card1-b)); }
+.tile-2 { background: linear-gradient(180deg, var(--card2-a), var(--card2-b)); }
+.tile-3 { background: linear-gradient(180deg, var(--card3-a), var(--card3-b)); }
+.tile-4 { background: linear-gradient(180deg, var(--card4-a), var(--card4-b)); }
+
+/* ---------- floating favourites pill ---------- */
+.pill {
+  position: fixed;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(26px + env(safe-area-inset-bottom));
+  background: var(--pill-bg);
+  color: #fff;
+  border-radius: 999px;
+  padding: 12px 22px;
+  font-size: 14px;
+  display: flex; align-items: center; gap: 9px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.38);
+  z-index: 40;
+}
+.pill:hover { filter: brightness(1.15); }
+.badge {
+  background: var(--badge);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ---------- generic panel / section ---------- */
+.section-title { font-size: 20px; font-weight: 700; margin: 4px 0 4px; }
+.section-sub { font-size: 12.5px; color: var(--text-dim); margin-bottom: 18px; }
+
+.seg {
+  display: flex; gap: 8px; margin-bottom: 14px;
+}
+.seg button {
+  flex: 1;
+  background: rgba(255,255,255,0.10);
+  color: var(--text-dim);
+  border-radius: 12px;
+  padding: 11px;
+  font-size: 14px;
+}
+.seg button.on { background: rgba(255,255,255,0.26); color: #fff; font-weight: 600; }
+
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.tool-btn {
+  background: rgba(255,255,255,0.12);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+}
+.tool-btn:hover { background: rgba(255,255,255,0.2); }
+.tool-btn.danger { background: rgba(232,69,92,0.22); color: #ffb8c2; }
+
+textarea.word-input {
+  width: 100%;
+  min-height: 170px;
+  background: rgba(0,0,0,0.24);
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  color: #fff;
+  padding: 14px;
+  font-size: 14px;
+  line-height: 1.65;
+  resize: vertical;
+  font-family: inherit;
+}
+textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
+
+.submit-btn {
+  width: 100%;
+  margin-top: 14px;
+  background: linear-gradient(90deg, var(--card2-a), var(--card1-a));
+  color: #fff;
+  border-radius: 14px;
+  padding: 15px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.submit-btn:hover { filter: brightness(1.1); }
+.submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.notice {
+  border-radius: 12px;
+  padding: 11px 13px;
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+  display: flex; gap: 8px; align-items: flex-start;
+}
+.notice.err { background: rgba(232,69,92,0.18); color: #ffc3cc; }
+.notice.info { background: rgba(78,201,138,0.16); color: #b6f0d2; }
+.notice .x { margin-left: auto; cursor: pointer; opacity: 0.7; }
+
+.hint {
+  font-size: 12px; color: var(--text-dim); line-height: 1.7;
+  background: rgba(0,0,0,0.18);
+  border-radius: 12px; padding: 12px 14px; margin-top: 14px;
+}
+.hint code {
+  background: rgba(255,255,255,0.12); padding: 1px 5px; border-radius: 4px;
+  font-size: 11.5px;
+}
+
+/* ---------- flashcard ---------- */
+.fc-counter { text-align: center; font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
+
+.flip-wrap { perspective: 1200px; margin-bottom: 18px; }
+.flip {
+  position: relative;
+  width: 100%;
+  height: 320px;
+  transform-style: preserve-3d;
+  transition: transform 0.5s cubic-bezier(0.4, 0.2, 0.2, 1);
+  cursor: pointer;
+}
+.flip.flipped { transform: rotateY(180deg); }
+.face {
+  position: absolute; inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  border-radius: 22px;
+  padding: 26px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center;
+  overflow: auto;
+}
+.face.front { background: linear-gradient(160deg, var(--card2-a), var(--card1-b)); }
+.face.back  { background: linear-gradient(160deg, var(--card1-a), var(--card3-b)); transform: rotateY(180deg); }
+
+.face .word { font-size: 34px; font-weight: 700; word-break: break-word; }
+.face .phon { font-size: 15px; color: rgba(255,255,255,0.8); margin-top: 10px; }
+.face .pos {
+  font-size: 12px; background: rgba(0,0,0,0.24);
+  padding: 3px 10px; border-radius: 999px; margin-bottom: 10px;
+}
+.face .mean { font-size: 21px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+.face .eg {
+  font-size: 13px; color: rgba(255,255,255,0.82);
+  margin-top: 16px; line-height: 1.7; font-style: italic;
+}
+.face .tap { position: absolute; bottom: 14px; font-size: 11.5px; color: rgba(255,255,255,0.5); }
+
+.fc-actions { display: flex; gap: 10px; }
+.fc-actions button {
+  flex: 1;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  border-radius: 13px;
+  padding: 13px 6px;
+  font-size: 14px;
+}
+.fc-actions button:hover { background: rgba(255,255,255,0.2); }
+.fc-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+.fc-actions button.faved { background: rgba(255,179,71,0.28); color: #ffd9a0; }
+
+/* ---------- autoplay bar ---------- */
+.auto-bar {
+  display: flex; gap: 8px; margin-top: 10px;
+}
+.auto-bar .play {
+  flex: 1.6;
+  background: rgba(255,255,255,0.12);
+  color: #fff; border-radius: 13px; padding: 13px 6px;
+  font-size: 14px; font-weight: 600;
+}
+.auto-bar .play.on {
+  background: linear-gradient(90deg, var(--card2-a), var(--card1-a));
+}
+.auto-bar .play:hover { filter: brightness(1.12); }
+.auto-bar .sound {
+  flex: 1;
+  background: rgba(255,255,255,0.12);
+  color: var(--text-dim); border-radius: 13px; padding: 13px 6px; font-size: 14px;
+}
+.auto-bar .sound.on { background: rgba(78,201,138,0.24); color: #b6f0d2; }
+
+.speed-seg { display: flex; gap: 8px; margin-top: 8px; }
+.speed-seg button {
+  flex: 1;
+  background: rgba(255,255,255,0.10);
+  color: var(--text-dim);
+  border-radius: 11px; padding: 10px 4px; font-size: 13px;
+}
+.speed-seg button.on { background: rgba(255,255,255,0.26); color: #fff; font-weight: 600; }
+
+.fc-tip {
+  text-align: center; font-size: 12.5px; color: var(--warn);
+  margin-top: 10px; min-height: 18px;
+}
+
+/* ---------- manage list ---------- */
+.mlist { display: flex; flex-direction: column; gap: 9px; }
+.mrow {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid var(--stroke);
+  border-radius: 13px;
+  padding: 13px 14px;
+  display: flex; align-items: center; gap: 12px;
+}
+.mrow .info { flex: 1; min-width: 0; }
+.mrow .w { font-size: 16px; font-weight: 600; }
+.mrow .m { font-size: 12.5px; color: var(--text-dim); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .acts { display: flex; gap: 6px; flex-shrink: 0; }
+.icon-btn {
+  background: rgba(255,255,255,0.12);
+  color: #fff; border-radius: 9px;
+  width: 34px; height: 34px; font-size: 15px;
+  display: grid; place-items: center;
+}
+.icon-btn:hover { background: rgba(255,255,255,0.22); }
+.icon-btn.del:hover { background: rgba(232,69,92,0.4); }
+
+.empty {
+  text-align: center; color: var(--text-dim);
+  padding: 60px 20px; font-size: 14px; line-height: 1.8;
+}
+.empty .glyph { font-size: 40px; display: block; margin-bottom: 12px; opacity: 0.6; }
+
+/* ---------- modal ---------- */
+.mask {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: grid; place-items: center;
+  padding: 20px; z-index: 60;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: 20px;
+  width: 100%; max-width: 400px;
+  max-height: 84vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.modal header {
+  display: flex; align-items: center;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--stroke);
+}
+.modal header h3 { margin: 0; font-size: 17px; flex: 1; }
+.modal .body { padding: 16px 18px; overflow: auto; }
+.modal .body p { margin: 0 0 12px; font-size: 14px; line-height: 1.7; color: var(--text-dim); }
+.modal footer {
+  display: flex; gap: 10px; padding: 14px 18px;
+  border-top: 1px solid var(--stroke);
+}
+.modal footer button {
+  flex: 1; border-radius: 12px; padding: 12px; font-size: 14.5px;
+  background: rgba(255,255,255,0.12); color: #fff;
+}
+.modal footer button.primary { background: var(--card2-a); font-weight: 600; }
+.modal footer button.danger { background: var(--badge); font-weight: 600; }
+
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
+.field input, .field textarea {
+  width: 100%;
+  background: rgba(0,0,0,0.26);
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  color: #fff; padding: 10px 12px; font-size: 14px;
+  font-family: inherit;
+}
+.field textarea { min-height: 64px; resize: vertical; }
+
+.fav-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.fav-row:last-child { border-bottom: none; }
+.fav-row .w { font-weight: 600; font-size: 15px; }
+.fav-row .m { font-size: 12.5px; color: var(--text-dim); }
+
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="app" id="app"></div>
+<input type="file" id="file-picker" accept=".csv,.txt,.tsv" class="hidden">
+
+<script>
+'use strict';
+
+/* =========================================================
+   Storage layer — replaces window.lingguang.db (cloud SQL)
+   with the browser's own localStorage. Same record shape as
+   the original word_cards table.
+   ========================================================= */
+const CARDS_KEY = 'flashcard_cards';
+const FAVORITES_KEY = 'flashcard_favorites';
+
+function loadCards() {
+  try {
+    const raw = localStorage.getItem(CARDS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+function saveCards(cards) {
+  localStorage.setItem(CARDS_KEY, JSON.stringify(cards));
+}
+function loadFavorites() {
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+function saveFavorites(favs) {
+  localStorage.setItem(FAVORITES_KEY, JSON.stringify(favs));
+}
+
+function newId() {
+  return 'c_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+/* =========================================================
+   App state
+   ========================================================= */
+const state = {
+  view: 'home',           // home | input | flashcard | manage
+  cards: loadCards(),
+  favorites: loadFavorites(),
+  deck: [],               // cards currently being studied
+  index: 0,
+  flipped: false,
+  inputText: '',
+  error: '',
+  info: '',
+  modal: null,            // {type, payload}
+  manageSort: localStorage.getItem('flashcard_manage_sort') || 'order',  // order | az
+  autoPlay: false,
+  speakMode: localStorage.getItem('flashcard_speak_mode') || 'en',  // off | en | both
+  speed: localStorage.getItem('flashcard_speed') || 'mid',   // slow | mid | fast
+  round: 1,
+  tip: '',
+};
+
+/* =========================================================
+   Autoplay — steps through the deck on a timer:
+   front (speak) → hold → flip to back → hold → next card.
+   Uses chained setTimeout rather than setInterval so a step
+   can never stack up behind a slow render.
+   ========================================================= */
+const SPEEDS = { slow: 5000, mid: 3000, fast: 1500 };
+const SPEED_LABEL = { slow: '慢', mid: '中', fast: '快' };
+const SPEAK_LABEL = { off: '🔇 不读', en: '🔊 英文', both: '🔊 英+中' };
+let autoTimer = null;
+
+function clearAuto() {
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+}
+
+function scheduleAuto() {
+  clearAuto();
+  if (!state.autoPlay || state.view !== 'flashcard' || state.modal) return;
+  autoTimer = setTimeout(autoStep, SPEEDS[state.speed] || SPEEDS.mid);
+}
+
+function autoSpeak(word) {
+  if (state.speakMode !== 'off') speak(word, 'en-US');
+}
+
+function autoStep() {
+  if (!state.autoPlay || state.view !== 'flashcard' || state.modal) return;
+
+  if (!state.flipped) {
+    setState({ flipped: true });          // front → back
+    if (state.speakMode === 'both') speakMeaning(state.deck[state.index]);
+  } else if (state.index < state.deck.length - 1) {
+    const next = state.index + 1;
+    setState({ index: next, flipped: false });
+    autoSpeak(state.deck[next].word);
+  } else {
+    // End of deck: loop back to the start instead of stopping.
+    const round = state.round + 1;
+    setState({ index: 0, flipped: false, round: round, tip: '第 ' + round + ' 轮' });
+    autoSpeak(state.deck[0].word);
+  }
+  scheduleAuto();
+}
+
+function startAuto() {
+  if (state.deck.length === 0) return;
+  state.autoPlay = true;
+  state.tip = '';
+  autoSpeak(state.deck[state.index].word);
+  render();
+  scheduleAuto();
+}
+
+// Pause: freeze on the current card so play resumes from here.
+function pauseAuto(tip) {
+  clearAuto();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  setState({ autoPlay: false, tip: tip || '' });
+}
+
+// Stop: halt and rewind to the first card.
+function stopAuto() {
+  clearAuto();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  setState({ autoPlay: false, index: 0, flipped: false, round: 1, tip: '' });
+}
+
+function setState(patch) {
+  Object.assign(state, patch);
+  render();
+}
+
+/* =========================================================
+   Card creation + dedup
+   ========================================================= */
+
+// Split free text into candidate words. Mirrors the original:
+// separated by spaces, commas or newlines.
+function extractWords(text) {
+  return text
+    .split(/[\s,，、;；\n\r\t]+/)
+    .map(function (w) { return w.trim(); })
+    .filter(function (w) { return w.length > 0; });
+}
+
+function addCards(entries) {
+  // entries: [{word, meaning, phonetic, partOfSpeech, example, favorite}]
+  const existing = new Set(state.cards.map(function (c) { return c.word.toLowerCase(); }));
+  const fresh = [];
+  const seenInBatch = new Set();
+  const wantFav = [];
+  let dupes = 0;
+
+  entries.forEach(function (e) {
+    const word = (e.word || '').trim();
+    if (!word) return;
+    const key = word.toLowerCase();
+
+    // Restore the bookmark even for words that already have a card
+    if (isTruthyFlag(e.favorite)) wantFav.push(word);
+
+    if (existing.has(key) || seenInBatch.has(key)) { dupes++; return; }
+    seenInBatch.add(key);
+    fresh.push({
+      id: newId(),
+      word: word,
+      phonetic: (e.phonetic || '').trim(),
+      meaning: (e.meaning || '').trim(),
+      partOfSpeech: (e.partOfSpeech || '').trim(),
+      example: (e.example || '').trim(),
+      sortOrder: 0,
+      createdAt: Date.now(),
+    });
+  });
+
+  const merged = state.cards.concat(fresh);
+  merged.forEach(function (c, i) { c.sortOrder = i; });
+  saveCards(merged);
+
+  let favorites = state.favorites;
+  if (wantFav.length) {
+    favorites = favorites.slice();
+    wantFav.forEach(function (w) {
+      const dup = favorites.some(function (x) { return x.toLowerCase() === w.toLowerCase(); });
+      if (!dup) favorites.push(w);
+    });
+    saveFavorites(favorites);
+  }
+
+  return { added: fresh.length, dupes: dupes, cards: merged, favorites: favorites };
+}
+
+/* =========================================================
+   CSV / TSV parsing
+   Handles quoted fields. Header row is auto-detected when it
+   contains a "word" column.
+   ========================================================= */
+function parseDelimited(text) {
+  // Strip the UTF-8 BOM. Excel and our own CSV export both write one,
+  // and leaving it in corrupts the first header cell.
+  text = text.replace(/^﻿/, '');
+
+  const delim = text.indexOf('\t') !== -1 && text.indexOf(',') === -1 ? '\t' : ',';
+  const rows = [];
+  let field = '';
+  let row = [];
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === delim) {
+      row.push(field); field = '';
+    } else if (ch === '\n') {
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else if (ch === '\r') {
+      // skip; \n handles the break
+    } else {
+      field += ch;
+    }
+  }
+  row.push(field);
+  if (row.length > 1 || row[0].trim() !== '') rows.push(row);
+
+  return rows.filter(function (r) {
+    return r.some(function (c) { return c.trim() !== ''; });
+  });
+}
+
+/* Header matching.
+
+   Exact names are checked first, then substring rules, so "中文释义",
+   "释义(中文)", "英文单词" and "Meaning" all resolve correctly without
+   the user having to memorise an exact spelling.
+
+   Order matters: the first rule whose pattern appears in the header
+   cell wins, and each field is claimed only once. */
+const HEADER_EXACT = {
+  word: 'word', meaning: 'meaning', phonetic: 'phonetic',
+  partofspeech: 'partOfSpeech', pos: 'partOfSpeech', example: 'example',
+  favorite: 'favorite', fav: 'favorite',
+  // Columns we deliberately ignore
+  序号: null, 编号: null, no: null, id: null, index: null, 'n': null,
+};
+
+const HEADER_RULES = [
+  // favorite goes first: the header 「生词本」 contains 「生词」, which would
+  // otherwise be claimed by the word rule below.
+  { key: 'favorite',     pats: ['收藏', '生词本', '星标', 'favorite', 'favourite', 'starred', 'bookmark'] },
+  { key: 'word',         pats: ['单词', '词汇', '生词', 'word', 'vocab', 'term'] },
+  { key: 'phonetic',     pats: ['音标', '发音', 'phonetic', 'pronunciation', 'ipa'] },
+  { key: 'partOfSpeech', pats: ['词性', 'partofspeech', 'speech'] },
+  { key: 'example',      pats: ['例句', '造句', 'example', 'sentence'] },
+  { key: 'meaning',      pats: ['释义', '意思', '解释', '翻译', '含义', '中文',
+                                'meaning', 'definition', 'translation', 'chinese'] },
+];
+
+// Values that mean "yes, this word is bookmarked"
+function isTruthyFlag(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  return s === '是' || s === '有' || s === 'y' || s === 'yes' ||
+         s === '1' || s === 'true' || s === '✓' || s === '√';
+}
+
+function normHeader(h) {
+  return String(h || '').trim().toLowerCase().replace(/[\s_()（）:：.-]/g, '');
+}
+
+function matchHeader(cell, taken) {
+  const h = normHeader(cell);
+  if (!h) return null;
+
+  if (Object.prototype.hasOwnProperty.call(HEADER_EXACT, h)) {
+    const k = HEADER_EXACT[h];
+    return k && !taken.has(k) ? k : null;
+  }
+
+  for (let i = 0; i < HEADER_RULES.length; i++) {
+    const rule = HEADER_RULES[i];
+    if (taken.has(rule.key)) continue;
+    for (let j = 0; j < rule.pats.length; j++) {
+      if (h.indexOf(rule.pats[j]) !== -1) return rule.key;
+    }
+  }
+  return null;
+}
+
+function rowsToEntries(rows) {
+  if (rows.length === 0) return [];
+
+  const taken = new Set();
+  const mapped = rows[0].map(function (cell) {
+    const key = matchHeader(cell, taken);
+    if (key) taken.add(key);
+    return key;
+  });
+
+  if (taken.has('word')) {
+    return rows.slice(1).map(function (r) {
+      const obj = {};
+      mapped.forEach(function (key, i) {
+        if (key) obj[key] = (r[i] || '').trim();
+      });
+      return obj;
+    }).filter(function (o) { return o.word; });
+  }
+
+  // No recognisable header. Assume col0 = word, col1 = meaning — but skip a
+  // leading row-number column, which is common in exported spreadsheets.
+  const body = rows;
+  const looksLikeIndexCol = body.length > 1 && body[0].length > 2 &&
+    body.every(function (r) { return /^\d+$/.test((r[0] || '').trim()); });
+  const off = looksLikeIndexCol ? 1 : 0;
+
+  return body.map(function (r) {
+    return { word: (r[off] || '').trim(), meaning: (r[off + 1] || '').trim() };
+  }).filter(function (o) { return o.word; });
+}
+
+/* =========================================================
+   Pronunciation — replaces window.lingguang.playTTS with the
+   browser's built-in speech synthesis. Chinese meanings need
+   a zh-CN voice, English words an en-US one.
+   ========================================================= */
+function speak(text, lang) {
+  if (!('speechSynthesis' in window) || !text) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = lang || 'en-US';
+  u.rate = u.lang === 'zh-CN' ? 1 : 0.9;
+  window.speechSynthesis.speak(u);
+}
+
+// Read the back of a card: the meaning, in Chinese.
+function speakMeaning(card) {
+  if (card && card.meaning) speak(card.meaning, 'zh-CN');
+}
+
+/* =========================================================
+   Small helpers
+   ========================================================= */
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function favoriteCards() {
+  const set = new Set(state.favorites.map(function (w) { return w.toLowerCase(); }));
+  return state.cards.filter(function (c) { return set.has(c.word.toLowerCase()); });
+}
+
+function isFav(word) {
+  return state.favorites.some(function (w) { return w.toLowerCase() === word.toLowerCase(); });
+}
+
+/* =========================================================
+   Navigation
+   ========================================================= */
+function goHome() {
+  clearAuto();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  setState({ view: 'home', error: '', info: '', tip: '', autoPlay: false, round: 1, modal: null });
+}
+
+function enterFlashcards(which) {
+  clearAuto();
+  const deck = which === 'fav' ? favoriteCards() : state.cards.slice();
+  if (deck.length === 0) {
+    setState({
+      modal: {
+        type: 'alert',
+        title: which === 'fav' ? '生词本是空的' : '还没有卡片',
+        text: which === 'fav'
+          ? '先在闪卡页面点「收藏」，把要重点复习的单词加进生词本。'
+          : '先去「制作卡片」加一些单词吧。',
+      },
+    });
+    return;
+  }
+  setState({ view: 'flashcard', deck: deck, index: 0, flipped: false, tip: '', autoPlay: false, round: 1, modal: null });
+}
+
+/* =========================================================
+   Actions
+   ========================================================= */
+function handleTextSubmit() {
+  const text = state.inputText.trim();
+  if (!text) {
+    setState({ error: '请先输入内容', info: '' });
+    return;
+  }
+
+  let entries;
+  // A line containing a comma or tab is treated as structured data
+  if (/[,\t]/.test(text) && text.indexOf('\n') !== -1) {
+    entries = rowsToEntries(parseDelimited(text));
+  } else {
+    entries = extractWords(text).map(function (w) { return { word: w }; });
+  }
+
+  if (entries.length === 0) {
+    setState({ error: '没有识别到可用的单词', info: '' });
+    return;
+  }
+
+  const r = addCards(entries);
+  let msg = '成功加入 ' + r.added + ' 个单词';
+  if (r.dupes > 0) msg += '，跳过 ' + r.dupes + ' 个重复的';
+  setState({ cards: r.cards, favorites: r.favorites, inputText: '', error: '', info: msg });
+}
+
+function handleFileImport() {
+  document.getElementById('file-picker').click();
+}
+
+function onFileChosen(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if (!file) return;
+
+  const name = file.name.toLowerCase();
+  if (/\.(xlsx|xls)$/.test(name)) {
+    setState({
+      error: '暂不支持 Excel 文件。请在 Excel 里选「文件 → 另存为 → CSV」，再导入那个 .csv 文件。',
+      info: '',
+    });
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = function () {
+    const text = String(reader.result || '');
+    let entries;
+    if (/\.(csv|tsv)$/.test(name) || /[,\t]/.test(text)) {
+      entries = rowsToEntries(parseDelimited(text));
+    } else {
+      entries = extractWords(text).map(function (w) { return { word: w }; });
+    }
+    if (entries.length === 0) {
+      setState({ error: '这个文件里没读到单词', info: '' });
+      return;
+    }
+    const r = addCards(entries);
+    let msg = '从「' + file.name + '」导入 ' + r.added + ' 个单词';
+    if (r.dupes > 0) msg += '，跳过 ' + r.dupes + ' 个重复的';
+    setState({ cards: r.cards, favorites: r.favorites, error: '', info: msg });
+  };
+  reader.onerror = function () {
+    setState({ error: '文件读取失败', info: '' });
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+async function handlePaste() {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      setState({ error: '这个浏览器不支持自动粘贴，请点进输入框按 ⌘V', info: '' });
+      return;
+    }
+    const t = await navigator.clipboard.readText();
+    if (!t) {
+      setState({ error: '剪贴板是空的', info: '' });
+      return;
+    }
+    setState({ inputText: (state.inputText ? state.inputText + '\n' : '') + t, error: '', info: '' });
+  } catch (e) {
+    setState({ error: '粘贴失败，请点进输入框按 ⌘V', info: '' });
+  }
+}
+
+/* Export to CSV. scope 'fav' writes only the favourites.
+   The 收藏 column lets a re-import restore which words were bookmarked —
+   without it a backup loses the whole favourites list. */
+function exportCsv(scope) {
+  const onlyFav = scope === 'fav';
+  const list = onlyFav ? favoriteCards() : state.cards;
+
+  if (list.length === 0) {
+    setState({ error: onlyFav ? '生词本还是空的，没有可导出的内容' : '还没有卡片可以导出', info: '' });
+    return;
+  }
+
+  const q = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+  const lines = ['单词,音标,中文释义,词性,例句,收藏'];
+  list.forEach(function (c) {
+    lines.push([c.word, c.phonetic, c.meaning, c.partOfSpeech, c.example,
+                isFav(c.word) ? '是' : ''].map(q).join(','));
+  });
+
+  // BOM so Excel opens the Chinese text correctly
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = onlyFav ? '生词本.csv' : '单词卡片.csv';
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  setState({ error: '', info: '已导出 ' + list.length + ' 个单词到「下载」文件夹', modal: null });
+}
+
+function toggleFav(word) {
+  let favs = state.favorites.slice();
+  if (isFav(word)) {
+    favs = favs.filter(function (w) { return w.toLowerCase() !== word.toLowerCase(); });
+  } else {
+    favs.push(word);
+  }
+  saveFavorites(favs);
+  setState({ favorites: favs });
+}
+
+function deleteCard(id) {
+  const gone = state.cards.find(function (c) { return c.id === id; });
+  const cards = state.cards.filter(function (c) { return c.id !== id; });
+  cards.forEach(function (c, i) { c.sortOrder = i; });
+  saveCards(cards);
+
+  // Drop the word from the favourites list too, otherwise the badge counts
+  // a word that no longer has a card behind it.
+  let favs = state.favorites;
+  if (gone) {
+    const stillThere = cards.some(function (c) {
+      return c.word.toLowerCase() === gone.word.toLowerCase();
+    });
+    if (!stillThere) {
+      favs = favs.filter(function (w) { return w.toLowerCase() !== gone.word.toLowerCase(); });
+      saveFavorites(favs);
+    }
+  }
+
+  // Keep the deck in sync if we are mid-study
+  const deck = state.deck.filter(function (c) { return c.id !== id; });
+  const index = Math.min(state.index, Math.max(0, deck.length - 1));
+  setState({ cards: cards, deck: deck, favorites: favs, index: index, modal: null });
+}
+
+function clearAll() {
+  saveCards([]);
+  saveFavorites([]);
+  setState({ cards: [], favorites: [], deck: [], index: 0, modal: null, info: '已清空全部卡片' });
+}
+
+function saveEdit(id) {
+  const g = function (n) { return (document.getElementById(n) || {}).value || ''; };
+  const word = g('e-word').trim();
+  if (!word) return;
+
+  const cards = state.cards.map(function (c) {
+    if (c.id !== id) return c;
+    return Object.assign({}, c, {
+      word: word,
+      phonetic: g('e-phon').trim(),
+      meaning: g('e-mean').trim(),
+      partOfSpeech: g('e-pos').trim(),
+      example: g('e-eg').trim(),
+    });
+  });
+  saveCards(cards);
+  const deck = state.deck.map(function (d) {
+    const hit = cards.find(function (c) { return c.id === d.id; });
+    return hit || d;
+  });
+  setState({ cards: cards, deck: deck, modal: null });
+}
+
+function addOneCard() {
+  const g = function (n) { return (document.getElementById(n) || {}).value || ''; };
+  const word = g('e-word').trim();
+  if (!word) return;
+  const r = addCards([{
+    word: word,
+    phonetic: g('e-phon').trim(),
+    meaning: g('e-mean').trim(),
+    partOfSpeech: g('e-pos').trim(),
+    example: g('e-eg').trim(),
+  }]);
+  setState({
+    cards: r.cards,
+    favorites: r.favorites,
+    modal: null,
+    error: r.added === 0 ? '「' + word + '」已经在卡片里了' : '',
+    info: r.added > 0 ? '已添加「' + word + '」' : '',
+  });
+}
+
+/* =========================================================
+   Views
+   ========================================================= */
+function viewHome() {
+  const n = state.cards.length;
+  const f = state.favorites.length;
+  return `
+    <div class="home-hero">
+      <div class="glyph">🎓</div>
+      <h1>单词闪卡学习</h1>
+      <p>制作专属单词卡片，随时翻卡复习</p>
+    </div>
+    <div class="tiles">
+      <button class="tile tile-1" data-act="manage">
+        <div class="glyph">☰</div>
+        <div class="title">卡片管理</div>
+        <div class="sub">${n > 0 ? n + ' 张卡片，可编辑删除' : '尚无卡片可管理'}</div>
+      </button>
+      <button class="tile tile-2" data-act="study-all">
+        <div class="glyph">🃏</div>
+        <div class="title">全部单词闪卡</div>
+        <div class="sub">${n > 0 ? n + ' 张卡片已就绪' : '还没有卡片'}</div>
+      </button>
+      <button class="tile tile-3" data-act="study-fav">
+        <div class="glyph">🔖</div>
+        <div class="title">生词本闪卡</div>
+        <div class="sub">${f > 0 ? f + ' 个生词待复习' : '生词本还是空的'}</div>
+      </button>
+      <button class="tile tile-4" data-act="input">
+        <div class="glyph">📝</div>
+        <div class="title">制作卡片</div>
+        <div class="sub">输入或导入文件添加单词</div>
+      </button>
+    </div>
+    <button class="pill" data-act="fav-modal">
+      🔖 生词本 <span class="badge">${f}</span>
+    </button>
+  `;
+}
+
+function noticeHtml() {
+  let h = '';
+  if (state.error) {
+    h += `<div class="notice err"><span>⚠️</span><span>${esc(state.error)}</span><span class="x" data-act="clear-msg">✕</span></div>`;
+  }
+  if (state.info) {
+    h += `<div class="notice info"><span>✓</span><span>${esc(state.info)}</span><span class="x" data-act="clear-msg">✕</span></div>`;
+  }
+  return h;
+}
+
+function viewInput() {
+  return `
+    <div class="page-head">
+      <button class="back-btn" data-act="home">← 返回</button>
+      <div class="spacer"></div>
+      ${state.cards.length > 0 ? '<button class="tool-btn danger" data-act="ask-clear">清空全部</button>' : ''}
+    </div>
+    <div class="section-title">制作单词卡片</div>
+    <div class="section-sub">输入文本或导入文件，快速创建专属单词卡片</div>
+    ${noticeHtml()}
+    <div class="toolbar">
+      <button class="tool-btn" data-act="file">📁 文件导入</button>
+      <button class="tool-btn" data-act="paste">📋 粘贴</button>
+      <button class="tool-btn" data-act="add-one">➕ 逐个添加</button>
+      ${state.inputText ? '<button class="tool-btn" data-act="clear-text">✕ 清空</button>' : ''}
+    </div>
+    <textarea class="word-input" id="word-input"
+      placeholder="请输入英文单词，多个单词用空格、逗号或换行分隔。&#10;&#10;也可以粘贴带释义的表格内容，每行写成：&#10;apple,苹果&#10;banana,香蕉">${esc(state.inputText)}</textarea>
+    <button class="submit-btn" data-act="submit">生成闪卡</button>
+    <div class="hint">
+      <b>文件导入支持什么</b><br>
+      · <code>.csv</code> / <code>.tsv</code> / <code>.txt</code><br>
+      · 表头怎么写都行，只要看得出意思：<code>单词</code>／<code>中文释义</code>／<code>音标</code>／<code>词性</code>／<code>例句</code>，英文的 <code>word</code>／<code>meaning</code> 也认<br>
+      · 用不上的列（比如「序号」）会自动忽略<br>
+      · 没有表头时，默认第一列是单词、第二列是释义<br>
+      · Excel 文件请先在 Excel 里「另存为 CSV」<br>
+      · 重复的单词会自动跳过
+    </div>
+  `;
+}
+
+function viewFlashcard() {
+  const deck = state.deck;
+  if (deck.length === 0) {
+    return `
+      <div class="page-head"><button class="back-btn" data-act="home">← 返回</button></div>
+      <div class="empty"><span class="glyph">🃏</span>这里没有卡片了</div>
+    `;
+  }
+  const i = Math.min(state.index, deck.length - 1);
+  const c = deck[i];
+  const faved = isFav(c.word);
+
+  return `
+    <div class="page-head">
+      <button class="back-btn" data-act="home">← 返回</button>
+      <div class="spacer"></div>
+      <button class="tool-btn" data-act="speak">🔊 发音</button>
+    </div>
+    <div class="fc-counter">${i + 1} / ${deck.length}${state.round > 1 ? ' · 第 ' + state.round + ' 轮' : ''}</div>
+    <div class="flip-wrap">
+      <div class="flip ${state.flipped ? 'flipped' : ''}" data-act="flip">
+        <div class="face front">
+          <div class="word">${esc(c.word)}</div>
+          ${c.phonetic ? `<div class="phon">${esc(c.phonetic)}</div>` : ''}
+          <div class="tap">点击卡片看释义</div>
+        </div>
+        <div class="face back">
+          ${c.partOfSpeech ? `<div class="pos">${esc(c.partOfSpeech)}</div>` : ''}
+          <div class="mean">${c.meaning ? esc(c.meaning) : '<span style="opacity:.55;font-size:15px">这张卡还没有释义，可以到「卡片管理」里补上</span>'}</div>
+          ${c.example ? `<div class="eg">${esc(c.example)}</div>` : ''}
+          <div class="tap">点击卡片翻回去</div>
+        </div>
+      </div>
+    </div>
+    <div class="fc-actions">
+      <button data-act="prev" ${i === 0 ? 'disabled' : ''}>← 上一张</button>
+      <button class="${faved ? 'faved' : ''}" data-act="fav">${faved ? '★ 已收藏' : '☆ 收藏'}</button>
+      <button data-act="next" ${i >= deck.length - 1 ? 'disabled' : ''}>下一张 →</button>
+    </div>
+    <div class="auto-bar">
+      <button class="play ${state.autoPlay ? 'on' : ''}" data-act="auto-toggle">
+        ${state.autoPlay ? '⏸ 暂停' : '▶ 自动播放'}
+      </button>
+      <button class="sound" data-act="auto-stop" ${!state.autoPlay && state.index === 0 && state.round === 1 ? 'disabled' : ''}>⏹ 停止</button>
+    </div>
+    <div class="speed-seg">
+      ${['off','en','both'].map(function (s) {
+        return `<button class="${state.speakMode === s ? 'on' : ''}" data-act="say-${s}">${SPEAK_LABEL[s]}</button>`;
+      }).join('')}
+    </div>
+    <div class="speed-seg">
+      ${['slow','mid','fast'].map(function (s) {
+        return `<button class="${state.speed === s ? 'on' : ''}" data-act="speed-${s}">${SPEED_LABEL[s]} ${SPEEDS[s]/1000}秒</button>`;
+      }).join('')}
+    </div>
+    <div class="fc-tip">${esc(state.tip)}</div>
+    <div class="hint kbd-hint">键盘也能用：<code>空格</code> 翻卡，<code>←</code> <code>→</code> 切换，<code>S</code> 发音（正面读英文、背面读中文），<code>F</code> 收藏，<code>P</code> 自动播放</div>
+  `;
+}
+
+/* Sort order for the manage list only. The study deck keeps import order. */
+const SORT_KEY = 'flashcard_manage_sort';
+
+function manageSortedCards() {
+  if (state.manageSort !== 'az') return state.cards;
+  // localeCompare with sensitivity:'base' makes the sort case-insensitive,
+  // so "Verdict" lands next to "vertical" rather than ahead of everything.
+  return state.cards.slice().sort(function (a, b) {
+    return a.word.localeCompare(b.word, 'en', { sensitivity: 'base' });
+  });
+}
+
+function viewManage() {
+  const rows = manageSortedCards().map(function (c) {
+    return `
+      <div class="mrow">
+        <div class="info">
+          <div class="w">${esc(c.word)}${c.phonetic ? ` <span style="font-size:12px;opacity:.6">${esc(c.phonetic)}</span>` : ''}</div>
+          <div class="m">${c.meaning ? esc(c.meaning) : '（无释义）'}</div>
+        </div>
+        <div class="acts">
+          <button class="icon-btn" data-act="speak-one" data-word="${esc(c.word)}" title="发音">🔊</button>
+          <button class="icon-btn" data-act="edit" data-id="${c.id}" title="编辑">✏️</button>
+          <button class="icon-btn del" data-act="ask-del" data-id="${c.id}" title="删除">🗑</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  const seg = state.cards.length > 1 ? `
+    <div class="seg" style="margin-bottom:14px">
+      <button class="${state.manageSort === 'order' ? 'on' : ''}" data-act="sort-order">导入顺序</button>
+      <button class="${state.manageSort === 'az' ? 'on' : ''}" data-act="sort-az">A → Z</button>
+    </div>` : '';
+
+  return `
+    <div class="page-head">
+      <button class="back-btn" data-act="home">← 返回</button>
+      <div class="spacer"></div>
+      <button class="tool-btn" data-act="add-one">➕ 添加</button>
+      <button class="tool-btn" data-act="export">⬇ 导出 CSV</button>
+    </div>
+    <div class="section-title">卡片管理</div>
+    <div class="section-sub">${state.cards.length} 张卡片，可编辑删除</div>
+    ${noticeHtml()}
+    ${seg}
+    ${state.cards.length === 0
+      ? '<div class="empty"><span class="glyph">📭</span>还没有卡片<br>去「制作卡片」加几个单词吧</div>'
+      : `<div class="mlist">${rows}</div>`}
+    ${state.cards.length > 0
+      ? '<button class="tool-btn danger" style="width:100%;margin-top:16px;padding:13px" data-act="ask-clear">清空全部卡片</button>'
+      : ''}
+  `;
+}
+
+/* ---------- modals ---------- */
+function viewModal() {
+  const m = state.modal;
+  if (!m) return '';
+
+  if (m.type === 'alert') {
+    return `
+      <div class="mask" data-act="close-modal">
+        <div class="modal" data-stop>
+          <header><h3>${esc(m.title)}</h3></header>
+          <div class="body"><p>${esc(m.text)}</p></div>
+          <footer><button class="primary" data-act="close-modal">知道了</button></footer>
+        </div>
+      </div>`;
+  }
+
+  if (m.type === 'confirm-clear') {
+    return `
+      <div class="mask" data-act="close-modal">
+        <div class="modal" data-stop>
+          <header><h3>清空全部卡片？</h3></header>
+          <div class="body"><p>${state.cards.length} 张卡片和生词本都会被删掉，这个操作不能撤销。<br><br>建议先点「导出 CSV」备份一份。</p></div>
+          <footer>
+            <button data-act="close-modal">取消</button>
+            <button class="danger" data-act="do-clear">确认清空</button>
+          </footer>
+        </div>
+      </div>`;
+  }
+
+  if (m.type === 'confirm-del') {
+    const c = state.cards.find(function (x) { return x.id === m.id; });
+    return `
+      <div class="mask" data-act="close-modal">
+        <div class="modal" data-stop>
+          <header><h3>删除这张卡片？</h3></header>
+          <div class="body"><p>「${esc(c ? c.word : '')}」会被删掉，不能撤销。</p></div>
+          <footer>
+            <button data-act="close-modal">取消</button>
+            <button class="danger" data-act="do-del" data-id="${m.id}">删除</button>
+          </footer>
+        </div>
+      </div>`;
+  }
+
+  if (m.type === 'edit' || m.type === 'add') {
+    const c = m.type === 'edit'
+      ? state.cards.find(function (x) { return x.id === m.id; }) || {}
+      : { word: '', phonetic: '', meaning: '', partOfSpeech: '', example: '' };
+    return `
+      <div class="mask" data-act="close-modal">
+        <div class="modal" data-stop>
+          <header><h3>${m.type === 'edit' ? '编辑卡片' : '添加卡片'}</h3></header>
+          <div class="body">
+            <div class="field"><label>单词</label><input id="e-word" value="${esc(c.word)}" placeholder="apple"></div>
+            <div class="field"><label>音标</label><input id="e-phon" value="${esc(c.phonetic)}" placeholder="/ˈæpl/"></div>
+            <div class="field"><label>释义</label><input id="e-mean" value="${esc(c.meaning)}" placeholder="苹果"></div>
+            <div class="field"><label>词性</label><input id="e-pos" value="${esc(c.partOfSpeech)}" placeholder="n."></div>
+            <div class="field"><label>例句</label><textarea id="e-eg" placeholder="I ate an apple.">${esc(c.example)}</textarea></div>
+          </div>
+          <footer>
+            <button data-act="close-modal">取消</button>
+            <button class="primary" data-act="${m.type === 'edit' ? 'do-edit' : 'do-add'}" data-id="${m.id || ''}">保存</button>
+          </footer>
+        </div>
+      </div>`;
+  }
+
+  if (m.type === 'favorites') {
+    const favs = favoriteCards();
+    const body = favs.length === 0
+      ? '<p>生词本还是空的。翻卡的时候点「收藏」，单词就会进到这里。</p>'
+      : favs.map(function (c) {
+          return `
+            <div class="fav-row">
+              <div style="flex:1;min-width:0">
+                <div class="w">${esc(c.word)}</div>
+                <div class="m">${c.meaning ? esc(c.meaning) : '（无释义）'}</div>
+              </div>
+              <button class="icon-btn del" data-act="unfav" data-word="${esc(c.word)}" title="移出生词本">🗑</button>
+            </div>`;
+        }).join('');
+    return `
+      <div class="mask" data-act="close-modal">
+        <div class="modal" data-stop>
+          <header><h3>生词本</h3><button class="icon-btn" data-act="close-modal">✕</button></header>
+          <div class="body">${body}</div>
+          <footer style="flex-direction:column;gap:8px">
+            <div style="display:flex;gap:10px;width:100%">
+              <button class="primary" data-act="study-all">学习全部单词</button>
+              <button class="primary" data-act="study-fav">学习收藏单词</button>
+            </div>
+            ${favs.length > 0
+              ? '<button style="width:100%" data-act="export-fav">⬇ 导出生词本（' + favs.length + ' 个）</button>'
+              : ''}
+          </footer>
+        </div>
+      </div>`;
+  }
+
+  return '';
+}
+
+/* =========================================================
+   Render
+   ========================================================= */
+function render() {
+  const app = document.getElementById('app');
+  let html = '';
+  if (state.view === 'home') html = viewHome();
+  else if (state.view === 'input') html = viewInput();
+  else if (state.view === 'flashcard') html = viewFlashcard();
+  else if (state.view === 'manage') html = viewManage();
+  app.innerHTML = html + viewModal();
+
+  // Restore textarea content + caret behaviour on the input page
+  const ta = document.getElementById('word-input');
+  if (ta) {
+    ta.addEventListener('input', function () { state.inputText = ta.value; });
+  }
+  const focusField = document.getElementById('e-word');
+  if (focusField) focusField.focus();
+}
+
+/* =========================================================
+   Event delegation
+   ========================================================= */
+document.addEventListener('click', function (ev) {
+  const stopper = ev.target.closest('[data-stop]');
+  const el = ev.target.closest('[data-act]');
+
+  // Click inside a modal box but not on an action: swallow it so the
+  // backdrop handler does not close the modal.
+  if (!el) return;
+  if (el.classList.contains('mask') && stopper) return;
+
+  const act = el.dataset.act;
+  const id = el.dataset.id;
+  const word = el.dataset.word;
+
+  switch (act) {
+    case 'home': goHome(); break;
+    case 'input': setState({ view: 'input', error: '', info: '', modal: null }); break;
+    case 'manage': setState({ view: 'manage', error: '', info: '', modal: null }); break;
+    case 'study-all': enterFlashcards('all'); break;
+    case 'study-fav': enterFlashcards('fav'); break;
+
+    case 'flip': setState({ flipped: !state.flipped }); if (state.autoPlay) scheduleAuto(); break;
+    case 'prev': setState({ index: Math.max(0, state.index - 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); break;
+    case 'next': setState({ index: Math.min(state.deck.length - 1, state.index + 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); break;
+
+    case 'auto-toggle':
+      if (state.autoPlay) pauseAuto(); else startAuto();
+      break;
+    case 'auto-stop': stopAuto(); break;
+    case 'say-off':
+    case 'say-en':
+    case 'say-both': {
+      const mode = act.slice(4);
+      localStorage.setItem('flashcard_speak_mode', mode);
+      if (mode === 'off' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+      setState({ speakMode: mode });
+      break;
+    }
+    case 'speed-slow':
+    case 'speed-mid':
+    case 'speed-fast': {
+      const sp = act.slice(6);
+      localStorage.setItem('flashcard_speed', sp);
+      setState({ speed: sp });
+      if (state.autoPlay) scheduleAuto();   // apply the new pace immediately
+      break;
+    }
+    case 'fav': toggleFav(state.deck[state.index].word); break;
+    case 'speak':
+      // Manual button reads whichever side is showing.
+      if (state.flipped) speakMeaning(state.deck[state.index]);
+      else speak(state.deck[state.index].word, 'en-US');
+      break;
+    case 'speak-one': speak(word, 'en-US'); break;
+    case 'unfav': toggleFav(word); break;
+
+    case 'submit': handleTextSubmit(); break;
+    case 'file': handleFileImport(); break;
+    case 'paste': handlePaste(); break;
+    case 'clear-text': setState({ inputText: '', error: '', info: '' }); break;
+    case 'clear-msg': setState({ error: '', info: '' }); break;
+    case 'export': exportCsv('all'); break;
+    case 'export-fav': exportCsv('fav'); break;
+
+    case 'sort-order':
+    case 'sort-az': {
+      const mode = act === 'sort-az' ? 'az' : 'order';
+      localStorage.setItem(SORT_KEY, mode);
+      setState({ manageSort: mode });
+      break;
+    }
+
+    case 'add-one': setState({ modal: { type: 'add' } }); break;
+    case 'do-add': addOneCard(); break;
+    case 'edit': setState({ modal: { type: 'edit', id: id } }); break;
+    case 'do-edit': saveEdit(id); break;
+    case 'ask-del': setState({ modal: { type: 'confirm-del', id: id } }); break;
+    case 'do-del': deleteCard(id); break;
+    case 'ask-clear': setState({ modal: { type: 'confirm-clear' } }); break;
+    case 'do-clear': clearAll(); break;
+    case 'fav-modal': setState({ modal: { type: 'favorites' } }); break;
+    case 'close-modal': setState({ modal: null }); break;
+  }
+});
+
+document.getElementById('file-picker').addEventListener('change', onFileChosen);
+
+/* One-off cleanup on load: drop favourites whose card no longer exists.
+   Cards deleted before this cleanup existed left the badge counting words
+   that cannot be shown. */
+(function pruneFavorites() {
+  const words = {};
+  state.cards.forEach(function (c) { words[c.word.toLowerCase()] = true; });
+  const kept = state.favorites.filter(function (w) { return words[w.toLowerCase()]; });
+  if (kept.length !== state.favorites.length) {
+    state.favorites = kept;
+    saveFavorites(kept);
+  }
+})();
+
+// Keyboard shortcuts, flashcard view only
+document.addEventListener('keydown', function (ev) {
+  if (state.view !== 'flashcard' || state.modal) return;
+  const tag = (ev.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+
+  if (ev.code === 'Space') { ev.preventDefault(); setState({ flipped: !state.flipped }); if (state.autoPlay) scheduleAuto(); }
+  else if (ev.key === 'ArrowLeft') { setState({ index: Math.max(0, state.index - 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); }
+  else if (ev.key === 'ArrowRight') { setState({ index: Math.min(state.deck.length - 1, state.index + 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); }
+  else if (ev.key === 's' || ev.key === 'S') {
+    if (state.flipped) speakMeaning(state.deck[state.index]);
+    else speak(state.deck[state.index].word, 'en-US');
+  }
+  else if (ev.key === 'f' || ev.key === 'F') { toggleFav(state.deck[state.index].word); }
+  else if (ev.key === 'p' || ev.key === 'P') { if (state.autoPlay) pauseAuto(); else startAuto(); }
+});
+
+render();
+</script>
+</body>
+</html>
