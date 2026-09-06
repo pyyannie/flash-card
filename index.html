@@ -436,7 +436,7 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 <script>
 'use strict';
 
-const APP_VERSION = '3';
+const APP_VERSION = '4';
 
 /* =========================================================
    Storage layer — replaces window.lingguang.db (cloud SQL)
@@ -973,6 +973,7 @@ const GIST_DESC = 'Flash Card data (managed by the app)';
 
 let syncTimer = null;
 let syncSuppressed = false;   // guards against sync writing → triggering sync
+let syncInFlight = false;     // must not live on state: callers set state first
 
 function ghHeaders() {
   return {
@@ -1122,8 +1123,9 @@ function syncTimeLabel() {
 /* mode: 'merge' | 'up' (local wins) | 'down' (cloud wins) */
 async function syncNow(mode) {
   if (!state.syncToken) return;
-  if (state.syncStatus === 'syncing') return;
+  if (syncInFlight) return;
 
+  syncInFlight = true;
   setState({ syncStatus: 'syncing', syncMsg: '' });
   try {
     if (mode === 'up') {
@@ -1159,6 +1161,10 @@ async function syncNow(mode) {
     });
   } catch (e) {
     setState({ syncStatus: 'error', syncMsg: e.message || '同步失败' });
+  } finally {
+    // Must always clear: the branches above return early, and without this
+    // one failure would wedge sync permanently.
+    syncInFlight = false;
   }
 }
 
@@ -1176,7 +1182,7 @@ function connectSync(token) {
   state.syncToken = t;
   state.syncGist = '';
   localStorage.setItem(SYNC_GIST_KEY, '');
-  setState({ syncStatus: 'syncing', syncMsg: '正在连接…' });
+  state.syncMsg = '正在连接…';
   syncNow('merge');
 }
 
