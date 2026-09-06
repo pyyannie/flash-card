@@ -35,7 +35,7 @@ apparently,/əˈpærəntli/,看样子、似乎,adv.,,
 手机和电脑可以共用一份单词库，数据存在**你自己的私密 Gist** 里：
 
 1. 首页点「☁️ 开启同步」
-2. 到 [github.com/settings/tokens](https://github.com/settings/tokens?type=beta) 生成一个 token，权限只勾 **Gists → Read and write**
+2. 到 [github.com/settings/tokens/new](https://github.com/settings/tokens/new) 生成一个 **classic** token，Expiration 选 No expiration，scopes **只勾 `gist`**
 3. 把 token 填进去，点「连接」
 4. 另一台设备填**同一串 token** 即可，不需要记 Gist 编号
 

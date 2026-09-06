@@ -1627,10 +1627,11 @@ function viewModal() {
       <div class="token-help">
         <b>怎么拿这串令牌</b>
         <ol>
-          <li>打开 <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
-          <li>点 <b>Generate new token</b></li>
-          <li>权限只勾 <b>Gists → Read and write</b>，别的都不要给</li>
-          <li>生成后复制那串字符，粘到上面</li>
+          <li>打开 <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener">github.com/settings/tokens/new</a></li>
+          <li><b>Note</b> 随便填，例如 <code>flash-card-sync</code></li>
+          <li><b>Expiration</b> 建议选 <b>No expiration</b>，否则到期后同步会失效</li>
+          <li>往下滚，<b>只勾 <code>gist</code> 这一个</b>，别的都不要勾</li>
+          <li>点 Generate token，复制那串 <code>ghp_</code> 开头的字符，粘到上面</li>
         </ol>
         令牌只存在这台设备的浏览器里，不会上传、不在网页代码里。<br>
         另一台设备填<b>同一串令牌</b>就能对上，不用记别的编号。
