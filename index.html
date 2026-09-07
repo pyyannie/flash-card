@@ -451,7 +451,7 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 <script>
 'use strict';
 
-const APP_VERSION = '8';
+const APP_VERSION = '9';
 
 /* =========================================================
    Storage layer — replaces window.lingguang.db (cloud SQL)
@@ -1207,7 +1207,17 @@ function onFileChosen(ev) {
     setState({ cards: r.cards, favorites: r.favorites, error: '', info: msg });
   };
   reader.onerror = function () {
-    setState({ error: '文件读取失败', info: '' });
+    // A folder can be picked when its name ends in .csv — Numbers exports
+    // exactly that. FileReader then fails with no useful detail, so spell
+    // out the likely cause instead of just saying "failed".
+    setState({
+      error: /\.(csv|tsv|txt)$/.test(name)
+        ? '读不出内容 —— 你选中的很可能是一个「文件夹」，不是文件。' +
+          'Numbers 导出 CSV 时会生成一个同名的文件夹，请双击它进去，选里面那个 .csv 文件。' +
+          '（在选择器里看右侧预览，写「文件夹」就是它）'
+        : '文件读取失败，这个文件可能损坏或者格式不支持。可以试试直接把表格内容复制粘贴到输入框。',
+      info: '',
+    });
   };
   reader.readAsText(file, 'utf-8');
 }
