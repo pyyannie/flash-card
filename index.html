@@ -446,12 +446,12 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 <body>
 
 <div class="app" id="app"></div>
-<input type="file" id="file-picker" accept=".csv,.txt,.tsv" class="hidden">
+<input type="file" id="file-picker" accept=".csv,.txt,.tsv,.numbers,.xlsx,.xls,text/csv,text/plain" class="hidden">
 
 <script>
 'use strict';
 
-const APP_VERSION = '7';
+const APP_VERSION = '8';
 
 /* =========================================================
    Storage layer — replaces window.lingguang.db (cloud SQL)
@@ -460,6 +460,36 @@ const APP_VERSION = '7';
    ========================================================= */
 const CARDS_KEY = 'flashcard_cards';
 const FAVORITES_KEY = 'flashcard_favorites';
+const TOMBS_KEY = 'flashcard_deleted';
+
+/* Deletion records ("tombstones"): word → when it was deleted.
+   Without these, merge-sync pulled a just-deleted card straight back from
+   the cloud a few seconds later, so deleting appeared to do nothing. */
+function loadTombs() {
+  try {
+    const raw = localStorage.getItem(TOMBS_KEY);
+    const o = raw ? JSON.parse(raw) : {};
+    return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveTombs(t) {
+  localStorage.setItem(TOMBS_KEY, JSON.stringify(t));
+}
+
+// Forget records older than this so the list cannot grow forever
+const TOMB_TTL = 60 * 24 * 3600 * 1000;   // 60 days
+
+function pruneTombs(t) {
+  const cutoff = Date.now() - TOMB_TTL;
+  const out = {};
+  Object.keys(t || {}).forEach(function (k) {
+    if (t[k] > cutoff) out[k] = t[k];
+  });
+  return out;
+}
 
 function loadCards() {
   try {
@@ -653,6 +683,23 @@ function addCards(entries) {
     });
   });
 
+  // Adding a word back cancels its deletion record. The new card must also
+  // be stamped strictly later than the tombstone, or a delete and re-add in
+  // the same millisecond would be indistinguishable.
+  if (fresh.length) {
+    const tombs = loadTombs();
+    let changed = false;
+    fresh.forEach(function (c) {
+      const k = c.word.toLowerCase();
+      if (tombs[k]) {
+        c.createdAt = Math.max(c.createdAt, tombs[k] + 1);
+        delete tombs[k];
+        changed = true;
+      }
+    });
+    if (changed) saveTombs(tombs);
+  }
+
   const merged = state.cards.concat(fresh);
   merged.forEach(function (c, i) { c.sortOrder = i; });
   saveCards(merged);
@@ -675,12 +722,24 @@ function addCards(entries) {
    Handles quoted fields. Header row is auto-detected when it
    contains a "word" column.
    ========================================================= */
+/* Pick the delimiter. Tab wins only when it splits every line into the same
+   number of columns — that is what a spreadsheet copy looks like. Checking
+   "has tab AND no comma" was wrong: one comma inside a Chinese meaning made
+   a Numbers paste fall back to comma and mangle the whole row. */
+function detectDelimiter(text) {
+  const lines = text.split(/\r?\n/).filter(function (l) { return l.trim() !== ''; }).slice(0, 30);
+  if (!lines.length) return ',';
+  const cols = lines.map(function (l) { return l.split('\t').length; });
+  const uniform = cols.every(function (n) { return n === cols[0]; });
+  return (cols[0] > 1 && uniform) ? '\t' : ',';
+}
+
 function parseDelimited(text) {
   // Strip the UTF-8 BOM. Excel and our own CSV export both write one,
   // and leaving it in corrupts the first header cell.
   text = text.replace(/^﻿/, '');
 
-  const delim = text.indexOf('\t') !== -1 && text.indexOf(',') === -1 ? '\t' : ',';
+  const delim = detectDelimiter(text);
   const rows = [];
   let field = '';
   let row = [];
@@ -714,6 +773,94 @@ function parseDelimited(text) {
   return rows.filter(function (r) {
     return r.some(function (c) { return c.trim() !== ''; });
   });
+}
+
+/* ---- Column sniffing, used when a file has no usable header row ----
+   Guessing "column 2 is the meaning" put phonetics into the meaning field.
+   Instead, look at what each column actually contains. */
+
+const IPA_CHARS = /[ˈˌːəɪʊæɒɔʌθðʃʒŋɡɜɐ]/;
+const HAN = /[一-鿿]/;
+
+function looksPhonetic(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s || HAN.test(s)) return false;
+  if (/^[/[].*[/\]]$/.test(s)) return true;     // /miːd/ or [miːd]
+  return IPA_CHARS.test(s);
+}
+
+function looksPartOfSpeech(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s || s.length > 14) return false;
+  if (/^(n|v|adj|adv|prep|conj|pron|num|art|int|vt|vi|aux|abbr)([.．/、]|$)/i.test(s)) return true;
+  return /^(名词|动词|形容词|副词|介词|连词|代词|数词|冠词|感叹词|短语|词组|专有名词|固定短语|名词短语|动词短语)/.test(s);
+}
+
+function looksChinese(v) { return HAN.test(String(v == null ? '' : v)); }
+
+function looksWord(v) {
+  const s = String(v == null ? '' : v).trim();
+  return !!s && /[A-Za-z]/.test(s) && !looksPhonetic(s);
+}
+
+/* Assign roles to columns by majority vote over the sample rows. */
+function sniffColumns(rows) {
+  const width = rows.reduce(function (m, r) { return Math.max(m, r.length); }, 0);
+  const sample = rows.slice(0, 40);
+  const nonEmpty = function (i) {
+    return sample.filter(function (r) { return String(r[i] || '').trim() !== ''; }).length;
+  };
+  const share = function (i, fn) {
+    const n = nonEmpty(i);
+    if (!n) return 0;
+    return sample.filter(function (r) { return fn(r[i]); }).length / n;
+  };
+
+  const stats = [];
+  for (let i = 0; i < width; i++) {
+    stats.push({
+      i: i,
+      filled: nonEmpty(i),
+      numeric: share(i, function (v) { return /^\d+$/.test(String(v || '').trim()); }),
+      phon: share(i, looksPhonetic),
+      pos: share(i, looksPartOfSpeech),
+      han: share(i, looksChinese),
+      word: share(i, looksWord),
+    });
+  }
+
+  const taken = {};
+  const claim = function (key, cands) {
+    for (const c of cands) {
+      if (taken[c.i]) continue;
+      taken[c.i] = key;
+      return c.i;
+    }
+    return -1;
+  };
+  const best = function (field, min) {
+    return stats.filter(function (s) { return s.filled && s[field] >= min && !taken[s.i]; })
+                .sort(function (a, b) { return b[field] - a[field]; });
+  };
+
+  // Row numbers first, so they never get mistaken for anything else
+  stats.filter(function (s) { return s.numeric >= 0.9 && s.filled; })
+       .forEach(function (s) { taken[s.i] = 'skip'; });
+
+  const map = {};
+  map.word = claim('word', best('word', 0.5));
+  map.phonetic = claim('phonetic', best('phon', 0.5));
+  map.partOfSpeech = claim('partOfSpeech', best('pos', 0.5));
+  map.meaning = claim('meaning', best('han', 0.5));
+  // Anything left with Chinese in it is the example sentence
+  map.example = claim('example', best('han', 0.3));
+
+  if (map.word < 0) {
+    // No obviously English column — fall back to the first unclaimed one
+    const first = stats.find(function (s) { return s.filled && !taken[s.i]; });
+    if (first) { map.word = first.i; taken[first.i] = 'word'; }
+  }
+  return map;
 }
 
 /* Header matching.
@@ -794,15 +941,19 @@ function rowsToEntries(rows) {
     }).filter(function (o) { return o.word; });
   }
 
-  // No recognisable header. Assume col0 = word, col1 = meaning — but skip a
-  // leading row-number column, which is common in exported spreadsheets.
-  const body = rows;
-  const looksLikeIndexCol = body.length > 1 && body[0].length > 2 &&
-    body.every(function (r) { return /^\d+$/.test((r[0] || '').trim()); });
-  const off = looksLikeIndexCol ? 1 : 0;
+  // No recognisable header: work out what each column holds by looking at
+  // the content, rather than assuming col0=word / col1=meaning.
+  const map = sniffColumns(rows);
+  const get = function (r, idx) { return idx >= 0 ? (r[idx] || '').trim() : ''; };
 
-  return body.map(function (r) {
-    return { word: (r[off] || '').trim(), meaning: (r[off + 1] || '').trim() };
+  return rows.map(function (r) {
+    return {
+      word: get(r, map.word),
+      phonetic: get(r, map.phonetic),
+      partOfSpeech: get(r, map.partOfSpeech),
+      meaning: get(r, map.meaning),
+      example: get(r, map.example),
+    };
   }).filter(function (o) { return o.word; });
 }
 
@@ -1009,11 +1160,25 @@ function onFileChosen(ev) {
   if (!file) return;
 
   const name = file.name.toLowerCase();
-  if (/\.(xlsx|xls)$/.test(name)) {
+  if (/\.numbers$/.test(name)) {
     setState({
-      error: '暂不支持 Excel 文件。请在 Excel 里选「文件 → 另存为 → CSV」，再导入那个 .csv 文件。',
+      error: 'Numbers 文件是苹果的专用格式，网页读不了。两个办法：' +
+             '① 在 Numbers 里全选表格（含表头那一行）→ 复制 → 粘到下面输入框，最省事；' +
+             '② 或者「文件 → 导出为 → CSV」，再导入那个 .csv。',
       info: '',
     });
+    return;
+  }
+  if (/\.(xlsx|xls)$/.test(name)) {
+    setState({
+      error: 'Excel 文件读不了。请在 Excel 里选「文件 → 另存为 → CSV UTF-8」，再导入那个 .csv 文件。' +
+             '或者直接全选表格复制，粘到下面输入框。',
+      info: '',
+    });
+    return;
+  }
+  if (/\.(pages|key|doc|docx|pdf|rtf)$/.test(name)) {
+    setState({ error: '这个文件类型读不了。请改用 CSV，或者直接把表格内容复制粘贴到输入框。', info: '' });
     return;
   }
 
@@ -1156,7 +1321,7 @@ async function findOrCreateGist() {
 }
 
 function emptyPayload() {
-  return { version: 1, updatedAt: Date.now(), cards: [], favorites: [] };
+  return { version: 1, updatedAt: Date.now(), cards: [], favorites: [], deleted: {} };
 }
 
 function localPayload() {
@@ -1165,6 +1330,7 @@ function localPayload() {
     updatedAt: Date.now(),
     cards: state.cards,
     favorites: state.favorites,
+    deleted: pruneTombs(loadTombs()),
   };
 }
 
@@ -1182,6 +1348,7 @@ async function readRemote() {
       updatedAt: d.updatedAt || 0,
       cards: Array.isArray(d.cards) ? d.cards : [],
       favorites: Array.isArray(d.favorites) ? d.favorites : [],
+      deleted: (d.deleted && typeof d.deleted === 'object') ? d.deleted : {},
     };
   } catch (e) {
     return emptyPayload();
@@ -1195,19 +1362,38 @@ async function writeRemote(payload) {
   await ghApi('/gists/' + id, { method: 'PATCH', body: JSON.stringify({ files: files }) });
 }
 
-/* Merge two sides. Nothing is dropped; blank fields are filled in. */
+/* Merge two sides. New cards from either side are kept and blank fields are
+   filled in. A card is dropped only when a deletion record is newer than the
+   other side's copy — that is how a delete travels between devices. */
 function mergeData(local, remote) {
+  const tombs = pruneTombs(
+    Object.assign({}, remote.deleted || {}, loadTombs())
+  );
+  // When both sides recorded a deletion, keep the later timestamp
+  Object.keys(remote.deleted || {}).forEach(function (k) {
+    const mine = loadTombs()[k] || 0;
+    const theirs = remote.deleted[k];
+    if (theirs > (tombs[k] || 0) && theirs > mine) tombs[k] = theirs;
+  });
+
   const byWord = new Map();
 
-  const take = function (c) {
+  const take = function (c, side) {
     const key = (c.word || '').trim().toLowerCase();
     if (!key) return;
+
+    // Deleted, and the deletion is newer than this copy → stay deleted
+    const tomb = tombs[key];
+    if (tomb) {
+      const stamp = side === 'remote' ? (remote.updatedAt || 0) : (c.createdAt || 0);
+      if (tomb >= stamp) return;
+    }
+
     const prev = byWord.get(key);
     if (!prev) {
       byWord.set(key, Object.assign({}, c));
       return;
     }
-    // Same word on both sides: keep what is there, fill what is missing
     ['phonetic', 'meaning', 'partOfSpeech', 'example'].forEach(function (f) {
       if (!prev[f] && c[f]) prev[f] = c[f];
     });
@@ -1216,8 +1402,8 @@ function mergeData(local, remote) {
     }
   };
 
-  (remote.cards || []).forEach(take);
-  (local.cards || []).forEach(take);
+  (remote.cards || []).forEach(function (c) { take(c, 'remote'); });
+  (local.cards || []).forEach(function (c) { take(c, 'local'); });
 
   const cards = Array.from(byWord.values());
   cards.forEach(function (c, i) {
@@ -1225,14 +1411,21 @@ function mergeData(local, remote) {
     c.sortOrder = i;
   });
 
+  const alive = new Set(cards.map(function (c) { return c.word.toLowerCase(); }));
   const seen = new Set();
   const favorites = [];
   (remote.favorites || []).concat(local.favorites || []).forEach(function (w) {
     const k = String(w).toLowerCase();
+    if (!alive.has(k)) return;              // never resurrect a deleted word
     if (!seen.has(k)) { seen.add(k); favorites.push(w); }
   });
 
-  return { version: 1, updatedAt: Date.now(), cards: cards, favorites: favorites };
+  // Whatever survived is alive: drop its tombstone so neither side can
+  // resurrect the deletion on a later sync.
+  alive.forEach(function (k) { delete tombs[k]; });
+
+  saveTombs(tombs);
+  return { version: 1, updatedAt: Date.now(), cards: cards, favorites: favorites, deleted: tombs };
 }
 
 function applyPayload(p) {
@@ -1379,6 +1572,14 @@ function deleteCard(id) {
   const gone = state.cards.find(function (c) { return c.id === id; });
   const cards = state.cards.filter(function (c) { return c.id !== id; });
   cards.forEach(function (c, i) { c.sortOrder = i; });
+
+  // Record the deletion so sync removes it from the cloud too, instead of
+  // treating the cloud copy as "something the other side still has".
+  if (gone) {
+    const tombs = loadTombs();
+    tombs[gone.word.toLowerCase()] = Date.now();
+    saveTombs(tombs);
+  }
   saveCards(cards);
 
   // Drop the word from the favourites list too, otherwise the badge counts
@@ -1546,6 +1747,7 @@ function viewInput() {
     <div class="hint">
       <b>文件导入支持什么</b><br>
       · <code>.csv</code> / <code>.tsv</code> / <code>.txt</code><br>
+      · <b>Numbers / Excel</b>：在表格里<b>全选（含表头）→ 复制 → 粘到上面输入框</b>最省事，不用导出文件<br>
       · 表头怎么写都行，只要看得出意思：<code>单词</code>／<code>中文释义</code>／<code>音标</code>／<code>词性</code>／<code>例句</code>，英文的 <code>word</code>／<code>meaning</code> 也认<br>
       · 用不上的列（比如「序号」）会自动忽略<br>
       · 没有表头时，默认第一列是单词、第二列是释义<br>
