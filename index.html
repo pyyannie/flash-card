@@ -320,7 +320,7 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 .mrow .info { flex: 1; min-width: 0; }
 .mrow .w { font-size: 16px; font-weight: 600; }
 .mrow .m { font-size: 12.5px; color: var(--text-dim); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mrow .acts { display: flex; gap: 6px; flex-shrink: 0; }
+.mrow .acts { display: flex; gap: 5px; flex-shrink: 0; }
 .icon-btn {
   background: rgba(255,255,255,0.12);
   color: #fff; border-radius: 9px;
@@ -329,6 +329,14 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 }
 .icon-btn:hover { background: rgba(255,255,255,0.22); }
 .icon-btn.del:hover { background: rgba(232,69,92,0.4); }
+.icon-btn.faved { background: rgba(255,179,71,0.3); color: #ffd9a0; }
+
+/* Four buttons per row get tight on a phone */
+@media (max-width: 420px) {
+  .mrow { padding: 12px 10px; }
+  .mrow .acts { gap: 4px; }
+  .icon-btn { width: 30px; height: 30px; font-size: 14px; border-radius: 8px; }
+}
 
 .empty {
   text-align: center; color: var(--text-dim);
@@ -451,7 +459,7 @@ textarea.word-input::placeholder { color: rgba(255,255,255,0.42); }
 <script>
 'use strict';
 
-const APP_VERSION = '9';
+const APP_VERSION = '10';
 
 /* =========================================================
    Storage layer — replaces window.lingguang.db (cloud SQL)
@@ -1782,6 +1790,16 @@ function voiceWarning() {
   return '';
 }
 
+/* Move through the deck, wrapping around at both ends so the last card
+   leads back to the first and the first steps back to the last. */
+function stepCard(delta) {
+  const n = state.deck.length;
+  if (!n) return;
+  const next = ((state.index + delta) % n + n) % n;
+  setState({ index: next, flipped: false, tip: '' });
+  if (state.autoPlay) scheduleAuto();
+}
+
 function viewFlashcard() {
   const deck = state.deck;
   if (deck.length === 0) {
@@ -1817,9 +1835,9 @@ function viewFlashcard() {
       </div>
     </div>
     <div class="fc-actions">
-      <button data-act="prev" ${i === 0 ? 'disabled' : ''}>← 上一张</button>
+      <button data-act="prev">← 上一张</button>
       <button class="${faved ? 'faved' : ''}" data-act="fav">${faved ? '★ 已收藏' : '☆ 收藏'}</button>
-      <button data-act="next" ${i >= deck.length - 1 ? 'disabled' : ''}>下一张 →</button>
+      <button data-act="next">下一张 →</button>
     </div>
     <div class="auto-bar">
       <button class="play ${state.autoPlay ? 'on' : ''}" data-act="auto-toggle">
@@ -1857,6 +1875,7 @@ function manageSortedCards() {
 
 function viewManage() {
   const rows = manageSortedCards().map(function (c) {
+    const faved = isFav(c.word);
     return `
       <div class="mrow">
         <div class="info">
@@ -1864,6 +1883,8 @@ function viewManage() {
           <div class="m">${c.meaning ? esc(c.meaning) : '（无释义）'}</div>
         </div>
         <div class="acts">
+          <button class="icon-btn ${faved ? 'faved' : ''}" data-act="fav-one" data-word="${esc(c.word)}"
+                  title="${faved ? '移出生词本' : '加入生词本'}">${faved ? '★' : '☆'}</button>
           <button class="icon-btn" data-act="speak-one" data-word="${esc(c.word)}" title="发音">🔊</button>
           <button class="icon-btn" data-act="edit" data-id="${c.id}" title="编辑">✏️</button>
           <button class="icon-btn del" data-act="ask-del" data-id="${c.id}" title="删除">🗑</button>
@@ -2168,8 +2189,8 @@ document.addEventListener('click', function (ev) {
     case 'study-fav': enterFlashcards('fav'); break;
 
     case 'flip': setState({ flipped: !state.flipped }); if (state.autoPlay) scheduleAuto(); break;
-    case 'prev': setState({ index: Math.max(0, state.index - 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); break;
-    case 'next': setState({ index: Math.min(state.deck.length - 1, state.index + 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); break;
+    case 'prev': stepCard(-1); break;
+    case 'next': stepCard(1); break;
 
     case 'auto-toggle':
       if (state.autoPlay) pauseAuto(); else startAuto();
@@ -2200,6 +2221,7 @@ document.addEventListener('click', function (ev) {
       else speak(state.deck[state.index].word, 'en-US');
       break;
     case 'speak-one': speak(word, 'en-US'); break;
+    case 'fav-one': toggleFav(word); break;
     case 'unfav': toggleFav(word); break;
 
     case 'submit': handleTextSubmit(); break;
@@ -2302,8 +2324,8 @@ document.addEventListener('keydown', function (ev) {
   if (tag === 'input' || tag === 'textarea') return;
 
   if (ev.code === 'Space') { ev.preventDefault(); setState({ flipped: !state.flipped }); if (state.autoPlay) scheduleAuto(); }
-  else if (ev.key === 'ArrowLeft') { setState({ index: Math.max(0, state.index - 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); }
-  else if (ev.key === 'ArrowRight') { setState({ index: Math.min(state.deck.length - 1, state.index + 1), flipped: false, tip: '' }); if (state.autoPlay) scheduleAuto(); }
+  else if (ev.key === 'ArrowLeft') { stepCard(-1); }
+  else if (ev.key === 'ArrowRight') { stepCard(1); }
   else if (ev.key === 's' || ev.key === 'S') {
     if (state.flipped) speakMeaning(state.deck[state.index]);
     else speak(state.deck[state.index].word, 'en-US');
