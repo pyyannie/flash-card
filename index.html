@@ -2104,10 +2104,16 @@ function viewModal() {
         <span>你现在是用本地文件打开的，同步多半会被浏览器拦住。请改用网址打开：<br>
         <code>pyyannie.github.io/flash-card/</code></span></div>` : ''}
       <p>把手机和电脑的单词库连起来。数据存在<b>你自己的私密 Gist</b> 里，只有你能看到。</p>
-      <div class="field">
-        <label>GitHub 令牌（token）</label>
-        <input id="sync-token" type="password" placeholder="ghp_ 或 github_pat_ 开头" autocomplete="off">
-      </div>
+      <form id="sync-form" action="#" method="post">
+        <!-- Hidden username lets iCloud Keychain pair the saved entry with the token field. -->
+        <input type="text" name="username" value="flash-card-sync" autocomplete="username"
+               tabindex="-1" aria-hidden="true"
+               style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
+        <div class="field">
+          <label>GitHub 令牌（token）</label>
+          <input id="sync-token" name="password" type="password" placeholder="ghp_ 或 github_pat_ 开头" autocomplete="current-password">
+        </div>
+      </form>
       <div class="token-help">
         <b>怎么拿这串令牌</b>
         <ol>
@@ -2282,8 +2288,10 @@ document.addEventListener('click', function (ev) {
       render();
       break;
     case 'sync-connect': {
-      const el = document.getElementById('sync-token');
-      connectSync(el ? el.value : '');
+      // Submit the form (rather than reading the field directly) so iOS offers to save to Keychain.
+      const form = document.getElementById('sync-form');
+      if (form && form.requestSubmit) form.requestSubmit();
+      else connectSync((document.getElementById('sync-token') || {}).value);
       break;
     }
     case 'sync-run':  syncNow('merge'); break;
@@ -2292,6 +2300,13 @@ document.addEventListener('click', function (ev) {
     case 'sync-off':  disconnectSync(); break;
     case 'close-modal': setState({ modal: null }); break;
   }
+});
+
+document.addEventListener('submit', function (ev) {
+  if (ev.target.id !== 'sync-form') return;
+  ev.preventDefault();
+  const el = document.getElementById('sync-token');
+  connectSync(el ? el.value : '');
 });
 
 document.getElementById('file-picker').addEventListener('change', onFileChosen);
